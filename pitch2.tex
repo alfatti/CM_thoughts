@@ -1,0 +1,98 @@
+\documentclass\[11pt]{article}
+\usepackage\[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{setspace}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\setstretch{1.2}
+
+\titleformat{\section}{\large\bfseries}{\thesection}{1em}{}
+
+\title{\textbf{Proof of Concept: Machine Learning for Predicting Daily P\&L of Derivative Books Using a Latent Factor Approach}}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section\*{1. Introduction and Motivation}
+
+Modeling and forecasting the daily profit and loss (P\&L) of a derivatives book is a central challenge in quantitative trading and risk management. Traditional P\&L attribution relies either on Greeks-based sensitivity measures or on pricing models rooted in no-arbitrage frameworks. While theoretically grounded, these approaches exhibit systematic weaknesses in practice. Notably, the rapid migration of moneyness and expiry in option contracts, combined with short lifespans and nonlinear payoffs, makes consistent attribution difficult. Moreover, parametric pricing models like Black-Scholes or Heston, though mathematically elegant, often fail to explain empirically observed return dynamics and exhibit poor out-of-sample performance.
+
+This motivates a data-driven approach capable of capturing latent risk factors while allowing for flexible, time-varying exposures. In this proof of concept (PoC), we draw on the methodology presented in \emph{"A Factor Model for Option Returns"} by Buechner and Kelly (2021), which extends Instrumented Principal Components Analysis (IPCA) to the cross-section of option returns. The IPCA framework accounts for time-varying betas by modeling them as functions of observable contract-level characteristics such as delta, implied volatility, maturity, and higher-order Greeks.
+
+Our goal is to assess the viability of this approach for modeling the daily P\&L of a derivatives book, demonstrating both high explanatory power and interpretability across moneyness, maturity, and volatility regimes.
+
+\section\*{2. Methodology}
+
+The core modeling framework follows a latent factor structure:
+\begin{equation}
+r\_{i,t+1} = z\_{i,t}' \Gamma\_\alpha + z\_{i,t}' \Gamma\_\beta f\_{t+1} + \varepsilon\_{i,t+1}
+\end{equation}
+where \$r\_{i,t+1}\$ is the delta-hedged return of option \$i\$ between \$t\$ and \$t+1\$, \$z\_{i,t}\$ is a vector of observable characteristics (e.g., delta, gamma, vega, time-to-maturity), \$\Gamma\_\beta\$ is a parameter matrix mapping characteristics to factor loadings, \$f\_{t+1}\$ is a vector of \$K\$ latent factors, and \$\Gamma\_\alpha\$ captures mispricing or alphas attributable directly to characteristics.
+
+\paragraph{Why Delta-Hedged Returns?}
+Defining \$r\_{i,t+1}\$ as the delta-hedged return serves several purposes. First, it removes the dominant first-order exposure of the option to the underlying asset, isolating the component of the return that reflects risk premia for higher-order effects such as volatility, convexity, skew, and jump risk. This stabilizes the distribution of returns across moneyness and maturity and enhances comparability across contracts. Without delta-hedging, raw option returns are highly heterogeneous and largely dominated by underlying movement, making them unsuitable for cross-sectional analysis.
+
+Second, delta-hedged returns align with theoretical justifications for linear factor models. In traditional asset pricing, one models expected returns as linear functions of factor exposures. This assumption breaks down if the underlying dominates returns. Delta-hedging restores balance and focuses the model on return variation attributable to the latent option-specific risks.
+
+Lastly, delta-hedged P\&L is a practical metric in the industry. It reflects the actual realized performance of an options position that is actively hedged, and hence corresponds to the economic notion of realized P\&L. In implementation, the delta-hedged return is computed as:
+
+$$
+  r_{i,t+1}^{\Delta\text{-hedged}} = (F_{t+1} - F_t) - \Delta_t (S_{t+1} - S_t) - \text{funding cost},
+$$
+
+where \$F\_t\$ is the option value, \$S\_t\$ is the underlying asset price, \$\Delta\_t\$ is the delta, and the funding cost accounts for carrying the hedged position.
+
+Unlike standard PCA, IPCA allows \$\beta\_{i,t} = z\_{i,t}' \Gamma\_\beta\$ to vary over time as a function of characteristics. The model is estimated using alternating least squares, cycling between updating \$\Gamma\_\beta\$ and recovering the latent factors \$f\_{t+1}\$ over time.
+
+Key advantages include:
+\begin{itemize}\[leftmargin=1.5em]
+\item Ability to incorporate domain knowledge through characteristics.
+\item Dynamic betas tailored to short-lived, migrating contracts.
+\item Joint learning of latent factor structure and conditional exposures.
+\end{itemize}
+
+For this PoC, we propose to implement the IPCA model using delta-hedged daily P\&L data of S\&P 500 index options or equivalent structured book data, focusing on return variance decomposition and cross-sectional predictability.
+
+\section\*{3. Outcomes and Results}
+
+Buechner and Kelly demonstrate that the IPCA framework, when applied to 20 years of S\&P 500 option data, yields several notable outcomes:
+
+\paragraph{High Explanatory Power.} A three-factor IPCA model explains more than 85% of total variance in monthly option returns. For daily returns, it maintains predictive strength, outperforming traditional Greeks-based models (e.g., Carr and Wu 2020 decomposition).
+
+\paragraph{Economic Interpretability.} The three latent factors correspond to intuitive structural components of the implied volatility surface:
+\begin{itemize}\[leftmargin=1.5em]
+\item \textbf{Factor 1:} Volatility term structure slope.
+\item \textbf{Factor 2:} Moneyness skew (tail risk).
+\item \textbf{Factor 3:} Level of implied volatility.
+\end{itemize}
+
+\paragraph{Trading Signal Viability.} The tangency portfolio constructed from IPCA factors achieved an annualized Sharpe ratio of 1.67 and a 15% annualized alpha over benchmark models including Fama-French-Carhart plus embedded leverage and straddle-based factors.
+
+\paragraph{Out-of-Sample Performance.} Predictive \$R^2\$ for future returns remains materially positive even under rolling out-of-sample estimation. This suggests robustness for real-time applications such as risk forecasting or hedging overlay construction.
+
+\section\*{4. Proof-of-Concept Scope}
+
+This PoC aims to validate the application of IPCA to a real-world derivatives book. The implementation plan includes:
+
+\begin{enumerate}\[label=\arabic\*.]
+\item \textbf{Data Preparation:} Collect delta-hedged return series and characteristics (Greeks, IV, moneyness, TTM) at daily frequency.
+\item \textbf{Model Estimation:} Fit the IPCA model with \$K=1\$ to \$5\$ factors, using characteristics as instruments.
+\item \textbf{Evaluation:} Report in-sample and out-of-sample total \$R^2\$, predictive \$R^2\$, Sharpe ratios, and conditional alphas.
+\item \textbf{Interpretation:} Map recovered factors to implied volatility surface dynamics. Assess regime sensitivity via moneyness and volatility binning.
+\item \textbf{Comparison:} Benchmark against PCA, Carr-Wu, and linear regression on Greeks.
+\end{enumerate}
+
+The result will be a flexible modeling pipeline for forecasting daily P\&L and risk premia attribution for derivative portfolios.
+
+\section\*{5. Conclusion}
+
+The IPCA framework presents a compelling alternative to traditional P\&L attribution models, particularly for options and structured derivatives. By leveraging observable characteristics to model dynamic exposures to latent risk factors, IPCA reconciles statistical power with economic interpretability. For a derivatives desk aiming to improve daily P\&L predictability, hedge planning, and alpha capture, this method provides a scalable and empirically validated foundation.
+
+The proposed PoC will deliver a modular, transparent system capable of adapting to real-time book dynamics, with potential extensions to intraday forecasting, cross-asset volatility surfaces, and portfolio stress testing.
+
+\end{document}
