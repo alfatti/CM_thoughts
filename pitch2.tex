@@ -74,6 +74,7 @@ Buechner and Kelly demonstrate that the IPCA framework, when applied to 20 years
 \paragraph{Trading Signal Viability.} The tangency portfolio constructed from IPCA factors achieved an annualized Sharpe ratio of 1.67 and a 15% annualized alpha over benchmark models including Fama-French-Carhart plus embedded leverage and straddle-based factors.
 
 \paragraph{Out-of-Sample Performance.} Predictive \$R^2\$ for future returns remains materially positive even under rolling out-of-sample estimation. This suggests robustness for real-time applications such as risk forecasting or hedging overlay construction.
+
 \paragraph{Scope and Limitations.} The empirical application of the IPCA model in the original study is limited to standardized European-style vanilla options on the S&P 500 index. Specifically, the contracts used include both puts and calls with time-to-maturity between 1 and 12 months (with robustness checks extending up to 2 years) and moneyness constrained via forward delta in the range [0.01, 0.5] for calls and [-0.5, -0.01] for puts. Deep in-the-money and far out-of-the-money contracts, as well as those with illiquid or mispriced quotes, were filtered out. No exotic features such as path-dependence, early exercise, or barrier triggers were considered. As such, conclusions regarding the efficacy of IPCA are currently restricted to vanilla equity index options; future work could explore the model's robustness when applied to exotic or path-dependent derivatives.
 
 \section\*{4. Proof-of-Concept Scope}
