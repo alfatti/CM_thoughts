@@ -59,6 +59,77 @@ Key advantages include:
 For this PoC, we propose to implement the IPCA model using delta-hedged daily P\&L data of S\&P 500 index options or equivalent structured book data, focusing on return variance decomposition and cross-sectional predictability.
 
 \section\*{3. Outcomes and Results}
+\section*{Features in $\Gamma_\beta$}
+
+In the IPCA model, each option's time-varying exposure to latent risk factors is given by:
+\[
+\beta_{i,t} = z_{i,t}^\top \Gamma_\beta
+\]
+where:
+\begin{itemize}
+    \item $z_{i,t} \in \mathbb{R}^L$: vector of observable \textbf{option characteristics},
+    \item $\Gamma_\beta \in \mathbb{R}^{L \times K}$: matrix mapping these characteristics to $K$ latent factor loadings.
+\end{itemize}
+
+\subsection*{Baseline Features Used (from Buechner \& Kelly, 2021)}
+
+Each of the following characteristics is included in $z_{i,t}$ along with interactions with a call/put dummy:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{Characteristic} & \textbf{Description} \\
+\midrule
+$\Delta$            & BMS delta (forward delta: proxy for moneyness) \\
+TTM                 & Time-to-maturity (in years) \\
+$\Omega$            & Embedded leverage: $\left|\Delta \cdot S / F\right|$ \\
+IV                  & Implied volatility (BMS) \\
+$\theta$            & BMS theta \\
+$\gamma$            & BMS gamma \\
+$\nu$               & BMS vega \\
+Volga               & Sensitivity of vega to changes in volatility \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent In addition, each characteristic is interacted with:
+\begin{itemize}
+    \item A call/put dummy variable: $d_{i,t} = 1$ if the option is a \textit{put}, $0$ if a \textit{call},
+    \item A constant term for intercept adjustment.
+\end{itemize}
+
+\subsection*{Final Feature Vector $z_{i,t}$}
+
+The resulting 15-dimensional feature vector is:
+\[
+z_{i,t} = \begin{bmatrix}
+1 \\
+\Delta_{i,t} \\
+\text{TTM}_{i,t} \\
+\Omega_{i,t} \\
+\text{IV}_{i,t} \\
+\theta_{i,t} \\
+\gamma_{i,t} \\
+\nu_{i,t} \\
+d_{i,t} \\
+d_{i,t} \cdot \Delta_{i,t} \\
+d_{i,t} \cdot \text{TTM}_{i,t} \\
+d_{i,t} \cdot \Omega_{i,t} \\
+d_{i,t} \cdot \text{IV}_{i,t} \\
+d_{i,t} \cdot \theta_{i,t} \\
+d_{i,t} \cdot \gamma_{i,t} \\
+d_{i,t} \cdot \nu_{i,t}
+\end{bmatrix} \in \mathbb{R}^{15}
+\]
+
+\subsection*{Remarks}
+
+\begin{itemize}
+    \item This design allows $\Gamma_\beta$ to capture how sensitivities to latent risk factors vary with contract characteristics.
+    \item All features are rescaled to lie in the range $[-0.5, 0.5]$ to stabilize estimation.
+    \item The approach accommodates nonlinearities through interaction terms, while keeping the model tractable.
+\end{itemize}
+
 
 Buechner and Kelly demonstrate that the IPCA framework, when applied to 20 years of S\&P 500 option data, yields several notable outcomes:
 
