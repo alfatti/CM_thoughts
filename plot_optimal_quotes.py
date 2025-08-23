@@ -39,174 +39,200 @@ plot_quotes_over_time(engine, S0=100.0, q=0.0, seed=7, n_delta=2001)
 
 
 +++++++++++++++++++++++++++++++++++++++++
-def simulate_and_plot_quotes(engine, S0, n_steps=None, seed=None, show=True):
-    """
-    Simulate and plot:
-      - Reference price S_t
-      - Final bid/ask quotes S_t ± δ*_t (from engine)
-      - Inventory q_t
-      - Cash process X_t
+# -------------------------------------------------------------------
+# Simulation + plotting: reference price, bid/ask quotes, inventory, cash
+# -------------------------------------------------------------------
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import Optional, Tuple
 
-    Assumptions (discrete-time Euler):
-      dS_t = sigma * dW_t + kappa * (lambda_a - lambda_b) dt
-      Trade arrivals at side s ∈ {bid, ask} within [t, t+dt):
-          Bernoulli( λ_s * dt * f_s(δ_s*(t, q_t)) ).
-      Inventory cap logic is enforced via engine.quotes (it returns None on a side if the next trade would breach the cap).
+def simulate_quotes_and_state(
+    engine,
+    S0: float,
+    q0: float,
+    X0: float = 0.0,
+    n_steps: Optional[int] = None,
+    seed: Optional[int] = None,
+) -> dict:
+    """
+    Simulate reference price S_t, inventory q_t, cash X_t, and optimal quotes
+    using the closed-form approximation (A,B,C) inside `engine`.
+
+    Discrete-time Euler/thinning simulation over [0,T] with step dt.
+    At each step:
+      - Interpolate A(t), B(t), compute p^b, p^a -> δ_b*, δ_a* (with caps).
+      - Update S via arithmetic Brownian: dS = sigma dW + kappa(λ_a-λ_b) dt.
+      - Execute RFQ trades via thinning:
+            buy (bid-side)   with prob λ_b dt * f^b(δ_b*), at price S - δ_b*
+            sell (ask-side)  with prob λ_a dt * f^a(δ_a*), at price S + δ_a*
+        (if a side is capped out, it's skipped automatically).
+      - Update inventory q and cash X accordingly.
+
+    Returns a dict of arrays for time, S, bid_quote, ask_quote, q, X, deltas.
+    """
+    rng = np.random.default_rng(seed)
+
+    p = engine.params
+    sc_b, sc_a = engine.scurve_b, engine.scurve_a
+
+    # Time grid (match ABC grid length unless overridden)
+    T = p.T
+    if n_steps is None:
+        # use the ABC grid resolution
+        t_grid = engine.ABC["t"]
+        # ensure starts at 0
+        if t_grid[0] > 1e-12:
+            t_grid = np.concatenate([[0.0], t_grid])
+        if abs(t_grid[-1] - T) > 1e-12:
+            t_grid[-1] = T
+    else:
+        t_grid = np.linspace(0.0, T, n_steps + 1)
+
+    dt = float(t_grid[1] - t_grid[0])
+    sqrt_dt = np.sqrt(dt)
+
+    n = len(t_grid)
+    S = np.empty(n); S[0] = S0
+    q = np.empty(n); q[0] = q0
+    X = np.empty(n); X[0] = X0
+
+    # Quotes (absolute) and offsets (delta)
+    bid = np.full(n, np.nan)
+    ask = np.full(n, np.nan)
+    delt_b = np.full(n, np.nan)
+    delt_a = np.full(n, np.nan)
+
+    for i in range(n - 1):
+        t = t_grid[i]
+        # Optimal offsets (respecting caps)
+        db, da = engine.quotes(t=t, q=float(q[i]))
+        delt_b[i] = db if db is not None else np.nan
+        delt_a[i] = da if da is not None else np.nan
+
+        # Absolute quotes
+        if db is not None: bid[i] = S[i] - db
+        if da is not None: ask[i] = S[i] + da
+
+        # Reference price update: arithmetic Brownian motion with drift from flow imbalance
+        dW = rng.normal(0.0, 1.0) * sqrt_dt
+        drift = p.kappa * (p.lambda_a - p.lambda_b) * dt
+        S[i + 1] = S[i] + p.sigma * dW + drift
+
+        # Simulate RFQ conversions via thinning (at most one fill per side per dt)
+        # Probabilities for a fill on each side within [t, t+dt]:
+        #    P_bid = λ_b dt f^b(δ_b),   P_ask = λ_a dt f^a(δ_a)
+        # Note: if a side is unavailable (cap) -> δ is NaN -> skip.
+        qb, qa = q[i], q[i]  # current inventory for cap checks
+
+        # Bid-side (buying, increases inventory)
+        if db is not None and (qb + p.z) <= p.qbar:
+            fb = float(sc_b.f(np.array([db]))[0])
+            Pb = max(0.0, min(1.0, p.lambda_b * dt * fb))
+            if rng.uniform() < Pb:
+                # Execute buy at S - δ_b
+                trade_price = S[i] - db
+                q[i + 1] = qb + p.z
+                X[i + 1] = X[i] - trade_price * p.z
+            else:
+                q[i + 1] = qb
+                X[i + 1] = X[i]
+        else:
+            q[i + 1] = qb
+            X[i + 1] = X[i]
+
+        # Ask-side (selling, decreases inventory)
+        if da is not None and (q[i + 1] - p.z) >= -p.qbar:
+            fa = float(sc_a.f(np.array([da]))[0])
+            Pa = max(0.0, min(1.0, p.lambda_a * dt * fa))
+            if rng.uniform() < Pa:
+                # Execute sell at S + δ_a
+                trade_price = S[i] + da
+                q[i + 1] = q[i + 1] - p.z
+                X[i + 1] = X[i + 1] + trade_price * p.z
+
+    # Last-step quotes at T (just for plotting continuity)
+    dbT, daT = engine.quotes(t=t_grid[-1], q=float(q[-1]))
+    delt_b[-1] = dbT if dbT is not None else np.nan
+    delt_a[-1] = daT if daT is not None else np.nan
+    if dbT is not None: bid[-1] = S[-1] - dbT
+    if daT is not None: ask[-1] = S[-1] + daT
+
+    return dict(
+        t=t_grid, S=S, bid=bid, ask=ask, q=q, X=X, delta_b=delt_b, delta_a=delt_a
+    )
+
+
+def plot_quotes_inventory_cash(sim_out: dict, title: Optional[str] = None) -> Tuple[plt.Figure, Tuple[plt.Axes, plt.Axes, plt.Axes]]:
+    """
+    Plot S_t with bid/ask, plus inventory and cash in separate subplots.
 
     Parameters
     ----------
-    engine : QuoteEngine
-        Built from build_pipeline(...). Provides quotes(t, q) and S-curves.
-    S0 : float
-        Initial reference price.
-    n_steps : int, optional
-        Number of time steps between 0 and T. Defaults to max(params.n_time, 1000).
-    seed : int, optional
-        Random seed for reproducibility.
-    show : bool, default True
-        If True, calls plt.show().
+    sim_out : dict
+        Output from simulate_quotes_and_state(...).
+        Keys: 't','S','bid','ask','q','X','delta_b','delta_a'
+    title : Optional[str]
+        Figure title.
 
     Returns
     -------
-    sim : dict
-        Dictionary with arrays: t, S, bid_quote, ask_quote, q, X, delta_b, delta_a, traded_bid, traded_ask.
+    (fig, (ax_price, ax_q, ax_cash))
     """
-    import numpy as np
-    import matplotlib.pyplot as plt
+    t = sim_out["t"]
+    S = sim_out["S"]
+    bid = sim_out["bid"]
+    ask = sim_out["ask"]
+    q = sim_out["q"]
+    X = sim_out["X"]
 
-    # Unpack model
-    m = engine.params
-    sc_b, sc_a = engine.scurve_b, engine.scurve_a
-    Lb, La = m.lambda_b, m.lambda_a
-    z = m.z
-    sigma = m.sigma
-    kappa = m.kappa
-    T = m.T
+    fig = plt.figure(figsize=(12, 8))
 
-    # Time grid
-    if n_steps is None:
-        n_steps = max(m.n_time, 1000)
-    t = np.linspace(0.0, T, n_steps + 1)
-    dt = T / n_steps
-    sdt = np.sqrt(dt)
-
-    # State arrays
-    S = np.empty(n_steps + 1)
-    q = np.empty(n_steps + 1)
-    X = np.empty(n_steps + 1)  # cash
-
-    delta_b = np.full(n_steps + 1, np.nan)
-    delta_a = np.full(n_steps + 1, np.nan)
-    bid_quote = np.full(n_steps + 1, np.nan)
-    ask_quote = np.full(n_steps + 1, np.nan)
-
-    traded_bid = np.zeros(n_steps + 1, dtype=int)  # 1 if trade at bid occurred at step i
-    traded_ask = np.zeros(n_steps + 1, dtype=int)  # 1 if trade at ask occurred at step i
-
-    # Init
-    rng = np.random.default_rng(seed)
-    S[0] = float(S0)
-    q[0] = 0.0
-    X[0] = 0.0
-
-    # Simulate
-    for i in range(n_steps):
-        ti = t[i]
-        qi = q[i]
-        Si = S[i]
-
-        # Optimal offsets (enforces inventory caps)
-        db, da = engine.quotes(t=ti, q=qi)
-        delta_b[i] = db if db is not None else np.nan
-        delta_a[i] = da if da is not None else np.nan
-
-        # Final quotes (absolute)
-        bid_quote[i] = Si - db if db is not None else np.nan
-        ask_quote[i] = Si + da if da is not None else np.nan
-
-        # Trade probabilities this step
-        # If a side is disabled (None), its probability is zero
-        pb = 0.0
-        pa = 0.0
-        if db is not None:
-            fb = sc_b.f(np.array([db], dtype=float))[0]
-            pb = max(0.0, min(1.0, Lb * dt * float(fb)))
-        if da is not None:
-            fa = sc_a.f(np.array([da], dtype=float))[0]
-            pa = max(0.0, min(1.0, La * dt * float(fa)))
-
-        # Realizations: at most one trade per side per step
-        trade_b = 1 if rng.random() < pb else 0
-        trade_a = 1 if rng.random() < pa else 0
-
-        # Apply trades (cash and inventory)
-        # Bid trade: we BUY z at price S - δ_b  -> inventory +z, cash -z*(S - δ_b)
-        if trade_b and db is not None and (qi + z) <= m.qbar:
-            q[i+1] = qi + z
-            X[i+1] = X[i] - z * (Si - db)
-            traded_bid[i] = 1
-        else:
-            q[i+1] = qi
-            X[i+1] = X[i]
-
-        # Ask trade: we SELL z at price S + δ_a -> inventory -z, cash +z*(S + δ_a)
-        # Use q[i+1] since bid could have filled in this step first (conservative sequencing).
-        if trade_a and da is not None and (q[i+1] - z) >= -m.qbar:
-            q[i+1] = q[i+1] - z
-            X[i+1] = X[i+1] + z * (Si + da)
-            traded_ask[i] = 1
-
-        # Reference price evolution (Euler)
-        dW = sdt * rng.standard_normal()
-        S[i+1] = Si + sigma * dW + kappa * (La - Lb) * dt
-
-    # Last-step quotes for plotting completeness
-    delta_b[-1], delta_a[-1] = engine.quotes(t=t[-1], q=q[-1])
-    bid_quote[-1] = S[-1] - delta_b[-1] if not np.isnan(delta_b[-1]) else np.nan
-    ask_quote[-1] = S[-1] + delta_a[-1] if not np.isnan(delta_a[-1]) else np.nan
-
-    # Package results
-    sim = dict(
-        t=t, S=S,
-        bid_quote=bid_quote, ask_quote=ask_quote,
-        q=q, X=X,
-        delta_b=delta_b, delta_a=delta_a,
-        traded_bid=traded_bid, traded_ask=traded_ask,
-    )
-
-    # ---------- Plot ----------
-    fig = plt.figure(figsize=(11, 8))
-
-    # Panel 1: S and quotes
-    ax1 = fig.add_subplot(3, 1, 1)
-    ax1.plot(t, S, label="Reference price $S_t$")
-    ax1.plot(t, bid_quote, label="Bid quote $S_t - \\delta^{b,*}_t$")
-    ax1.plot(t, ask_quote, label="Ask quote $S_t + \\delta^{a,*}_t$")
-    ax1.set_ylabel("Price")
-    ax1.set_title("Reference Price and Final Bid/Ask Quotes")
-    ax1.legend(loc="best")
-    ax1.grid(True, alpha=0.3)
+    # Panel 1: Reference price + quotes
+    ax_price = fig.add_subplot(3, 1, 1)
+    ax_price.plot(t, S, lw=1.6, label="Reference price $S_t$")
+    ax_price.plot(t, bid, lw=1.1, linestyle="--", label="Bid quote $S_t - \\delta^*_b$")
+    ax_price.plot(t, ask, lw=1.1, linestyle="--", label="Ask quote $S_t + \\delta^*_a$")
+    ax_price.set_ylabel("Price")
+    ax_price.legend(loc="best")
+    ax_price.grid(True, alpha=0.25)
 
     # Panel 2: Inventory
-    ax2 = fig.add_subplot(3, 1, 2, sharex=ax1)
-    ax2.plot(t, q, label="Inventory $q_t$")
-    ax2.axhline(m.qbar, linestyle="--")
-    ax2.axhline(-m.qbar, linestyle="--")
-    ax2.set_ylabel("Inventory")
-    ax2.set_title("Inventory Path (caps shown)")
-    ax2.grid(True, alpha=0.3)
+    ax_q = fig.add_subplot(3, 1, 2, sharex=ax_price)
+    ax_q.step(t, q, where="post", label="Inventory $q_t$")
+    ax_q.set_ylabel("Inventory")
+    ax_q.grid(True, alpha=0.25)
+    ax_q.legend(loc="best")
 
     # Panel 3: Cash
-    ax3 = fig.add_subplot(3, 1, 3, sharex=ax1)
-    ax3.plot(t, X, label="Cash $X_t$")
-    ax3.set_xlabel("Time")
-    ax3.set_ylabel("Cash")
-    ax3.set_title("Cash Process")
-    ax3.grid(True, alpha=0.3)
+    ax_cash = fig.add_subplot(3, 1, 3, sharex=ax_price)
+    ax_cash.plot(t, X, lw=1.6, label="Cash $X_t$")
+    ax_cash.set_xlabel("Time")
+    ax_cash.set_ylabel("Cash")
+    ax_cash.grid(True, alpha=0.25)
+    ax_cash.legend(loc="best")
+
+    if title:
+        fig.suptitle(title, y=0.98)
 
     fig.tight_layout()
-    if show:
-        plt.show()
+    return fig, (ax_price, ax_q, ax_cash)
++++++++++++++++++++++++++++++++++++++++++++++
+# Assuming you already have `engine` from build_pipeline(...)
 
-    return sim
+# 1) Simulate from S0, q0
+sim = simulate_quotes_and_state(
+    engine,
+    S0=100.0,    # starting reference price
+    q0=0.0,      # starting inventory
+    X0=0.0,      # starting cash
+    n_steps=1000,
+    seed=42
+)
 
+# 2) Plot
+fig, (ax_price, ax_q, ax_cash) = plot_quotes_inventory_cash(
+    sim, title="RFQ Quotes, Reference Price, Inventory, and Cash"
+)
+
+# (Optional) Save the figure:
+# fig.savefig("quotes_inventory_cash.png", dpi=150, bbox_inches="tight")
