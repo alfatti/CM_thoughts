@@ -1,0 +1,56 @@
+
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb, graphicx, hyperref}
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\title{Quantum Entropy Scoring for Outlier Detection in High Dimensions}
+\author{Ali Fathi \\ CIB Data Science}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Detecting outliers in high-dimensional data sets remains one of the most persistent challenges in modern data analysis. Traditional approaches typically rely either on distance-based scoring, which measures how far a sample lies from the empirical mean, or on spectral methods, which identify directions of inflated variance in the data. Each of these strategies has its own strengths, but also clear weaknesses when confronted with heterogeneous or subtle outliers. This white paper provides a focused exposition of Quantum Entropy (QUE) scoring, a recently proposed method that interpolates between the two extremes by introducing an entropy-regularized spectral mixture. The result is a scoring rule that remains sensitive to multiple forms of deviation and that scales efficiently to very high dimensions.
+\end{abstract}
+
+\section{Outlier Detection in High Dimensions}
+Outliers in a data set may arise for many different reasons. Some points may have unusually large magnitude, standing out purely by virtue of their distance from the center of mass of the distribution. Others may not appear extreme in isolation, but when taken collectively they bias the empirical covariance, creating spurious directions of variance that are not representative of the underlying population. In real data, both types often coexist, with corrupted samples distributed across several unrelated directions.
+
+The difficulty with conventional methods is that each is tuned to only one of these cases. Distance-based scoring excels at identifying extreme points with inflated norms, but misses those that are directionally biased yet norm-preserving. Conversely, spectral approaches focus attention narrowly on the top eigenvector of the empirical covariance, but this is not sufficient if adversarial outliers distribute their influence across several orthogonal directions. In such cases the method must be repeated multiple times, incurring substantial computational overhead, while still remaining blind to more diffuse corruption patterns.
+
+\section{Quantum Entropy Scores}
+Quantum Entropy (QUE) scoring was introduced to overcome precisely this gap. The central object in QUE is a density matrix
+\[
+U = \frac{\exp(\alpha \Sigma)}{\mathrm{tr} \exp(\alpha \Sigma)},
+\]
+constructed from the empirical covariance $\Sigma$ of the data. Here the parameter $\alpha > 0$ regulates the trade-off between focusing mass on a few high-variance directions and spreading mass more evenly across the spectrum. The exponential and normalization make $U$ a bona fide probability distribution over eigen-directions, with the von Neumann entropy serving as a regularizer.
+
+Given this $U$, the outlier score of a data point $X_i$ is defined as
+\[
+\tau_i = (X_i - \mu)^\top U (X_i - \mu),
+\]
+where $\mu$ is the empirical mean. The intuition is that a sample is penalized whenever it contributes to inflated variance in any direction, not merely along the single top eigenvector. When $\alpha$ is taken close to zero, the matrix $U$ approaches the scaled identity, and the score reduces to the familiar squared Euclidean norm. When $\alpha$ grows large, $U$ concentrates on the leading eigenvector, and the score becomes essentially a projection along the most biased direction. For intermediate values of $\alpha$, the scoring rule interpolates smoothly between these two behaviors, yielding sensitivity to both types of anomalies simultaneously.
+
+\section{Scalability and Implementation}
+A key advantage of QUE is computational. Naively computing the matrix exponential appears costly, but by combining Johnson–Lindenstrauss sketching with truncated series expansions one can obtain $(1\pm \varepsilon)$ approximations to the scores in nearly-linear time in the input size. This makes it practical to apply QUE scoring on data sets with thousands of dimensions, where traditional repeated eigen-decomposition would be prohibitive.
+
+\section{Illustrative Example}
+The subtlety of high-dimensional outliers is illustrated in Figure~\ref{fig:que-example}. The blue circle represents a purely norm-based view: every point is judged by its distance from the mean. From this perspective, many corrupted samples appear perfectly innocuous, since their norms are indistinguishable from those of true inliers.
+
+However, when an $\varepsilon$-fraction of such samples are all aligned in a similar direction, their aggregate effect is to inflate variance along that axis. This is captured by the red ellipse, which indicates how the empirical covariance is distorted. Importantly, no single corrupted point stands out as extreme, yet together they introduce a directional bias large enough to shift the mean and create a spurious eigenvalue.
+
+The key insight is that outliers need not look anomalous in isolation: their influence may only be visible in the geometry of the data as a whole. Quantum Entropy Scoring is designed precisely for this setting. By interpolating between distance-based scoring and spectral analysis, it detects when many seemingly normal points collectively bias the covariance structure, without being restricted to just the top eigenvector.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.65\textwidth]{mean_shift1.png}
+    \caption{Schematic illustrating collective corruption. While each corrupted point (red) looks normal in norm, their aggregate effect inflates variance along a direction, distorting the covariance (red ellipse) and shifting the mean. Norm-based methods (blue circle) fail to notice this, while QUE scoring captures the distortion by blending norm and spectral information.}
+    \label{fig:que-example}
+\end{figure}
+
+\section{Conclusion}
+Quantum Entropy scoring provides a principled method for outlier detection in high dimensions. By leveraging entropy regularization to combine information across the entire spectrum of the covariance matrix, it overcomes the blind spots of purely norm-based or purely spectral approaches. At the same time, it admits efficient approximation schemes that scale to modern data sets. As such, QUE represents a compelling addition to the toolbox of high-dimensional data analysis, particularly in domains where robustness and computational tractability are equally important.
+
+\end{document}
