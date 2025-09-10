@@ -117,5 +117,76 @@ Together, these baselines provide a diverse set of challengers: norm-based, spec
 tree-based, and covariance-based. This diversity ensures that QUE is evaluated not just against trivial
 rules, but against widely-used outlier detection paradigms.
 
+\section{Optimization Objective Underlying QUE}
+The central mathematical object in Quantum Entropy (QUE) scoring is the density matrix $U$, which is
+obtained as the solution to an entropy-regularized convex program. Given the empirical covariance
+matrix $\Sigma \in \mathbb{R}^{d \times d}$, QUE defines $U$ as the optimizer of
+\begin{equation}
+    \max_{U \succeq 0,\; \mathrm{tr}(U) = 1}
+    \; \alpha \,\langle U, \Sigma \rangle + S(U),
+    \label{eq:que-opt}
+\end{equation}
+where $\alpha > 0$ is a trade-off parameter, $\langle A,B \rangle = \mathrm{tr}(A B^\top)$ is the trace
+inner product, and
+\[
+    S(U) = -\langle U, \log U \rangle
+\]
+is the \emph{quantum entropy} (or von Neumann entropy) of $U$. The constraints enforce that $U$ is a
+positive semidefinite matrix with unit trace, i.e., a density matrix.
+
+\subsection{Interpretation}
+If $U$ has eigendecomposition
+\[
+    U = \sum_{i=1}^d \mu_i v_i v_i^\top,
+\]
+then $\{\mu_i\}$ form a probability distribution over orthonormal directions $\{v_i\}$, since
+$\mu_i \ge 0$ and $\sum_i \mu_i = 1$. Under this interpretation:
+\[
+    \langle U, \Sigma \rangle = \mathbb{E}_{v \sim \mu} \left[ v^\top \Sigma v \right],
+\]
+is the expected variance of the data in a randomly sampled direction, while $S(U)$ measures the entropy
+of the distribution $\mu$. The optimization problem \eqref{eq:que-opt} therefore balances two competing
+objectives: concentrate on directions with large variance (driven by outliers) versus maintain high
+entropy, i.e., spread mass across multiple directions.
+
+\subsection{Closed Form Solution}
+Problem \eqref{eq:que-opt} admits a closed-form solution:
+\[
+    U^\star = \frac{\exp(\alpha \Sigma)}{\mathrm{tr}\!\left( \exp(\alpha \Sigma) \right)}.
+\]
+This is obtained by taking the first-order optimality conditions of the Lagrangian
+\[
+    \mathcal{L}(U,\lambda) = \alpha \langle U, \Sigma \rangle - \langle U, \log U \rangle
+    + \lambda \big( 1 - \mathrm{tr}(U) \big),
+\]
+and noting that the derivative with respect to $U$ yields
+\[
+    \alpha \Sigma - \log U - I + \lambda I = 0
+    \quad \implies \quad
+    U \propto \exp(\alpha \Sigma).
+\]
+Normalization by $\mathrm{tr}(\cdot)$ enforces the unit-trace constraint.
+
+\subsection{Limiting Regimes}
+The parameter $\alpha$ controls the degree of concentration:
+\begin{itemize}
+    \item As $\alpha \to 0$, we have $U \to \tfrac{1}{d} I$, i.e. the uniform distribution over
+    all directions, reducing QUE to $\ell_2$ norm scoring.
+    \item As $\alpha \to \infty$, $U$ concentrates on the eigenvector corresponding to the largest
+    eigenvalue of $\Sigma$, recovering naive spectral scoring.
+\end{itemize}
+Thus, QUE interpolates continuously between purely norm-based and purely spectral methods, with
+intermediate values of $\alpha$ capturing multi-directional outliers.
+
+\subsection{Optimization Perspective}
+The entropy term is crucial: without $S(U)$, the problem degenerates into maximizing variance in the
+single top direction. The entropy acts as a regularizer, encouraging exploration of multiple
+eigen-directions simultaneously. This makes QUE robust against heterogeneous outliers, since any
+direction in which the empirical covariance is spuriously inflated contributes to the solution.
+Moreover, because the optimization is convex with a closed-form solution, computing approximate QUE
+scores is feasible in nearly linear time using randomized linear algebra (e.g.\ Johnson–Lindenstrauss
+sketches and truncated series expansion of $\exp(\alpha \Sigma)$).
+
+
 
 \end{document}
