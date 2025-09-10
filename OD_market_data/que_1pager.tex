@@ -50,7 +50,72 @@ The key insight is that outliers need not look anomalous in isolation: their inf
     \label{fig:que-example}
 \end{figure}
 
-\section{Conclusion}
-Quantum Entropy scoring provides a principled method for outlier detection in high dimensions. By leveraging entropy regularization to combine information across the entire spectrum of the covariance matrix, it overcomes the blind spots of purely norm-based or purely spectral approaches. At the same time, it admits efficient approximation schemes that scale to modern data sets. As such, QUE represents a compelling addition to the toolbox of high-dimensional data analysis, particularly in domains where robustness and computational tractability are equally important.
+\section{Challenger Methods}
+In order to assess the merits of Quantum Entropy (QUE) scoring, we benchmark against several standard
+outlier detection methods that represent distinct statistical principles. Each method assigns a score
+$\tau_i$ to every sample $X_i \in \mathbb{R}^d$, with larger values indicating higher likelihood of being
+an outlier.
+
+\subsection{Euclidean Norm Scoring}
+The most direct approach is to use the squared Euclidean distance from the empirical mean:
+\[
+\tau_i^{\ell_2} = \|X_i - \mu\|_2^2,
+\qquad \mu = \frac{1}{n}\sum_{j=1}^n X_j.
+\]
+This captures gross deviations in magnitude, but fails when corruptions are aligned in a direction without
+large changes in norm.
+
+\subsection{Naive Spectral Scoring}
+Spectral methods focus on directions of inflated variance. Let $v$ be the top eigenvector of the empirical
+covariance matrix $\Sigma = \tfrac{1}{n}\sum_{j=1}^n (X_j - \mu)(X_j - \mu)^\top$. The score is
+\[
+\tau_i^{\text{spec}} = \langle X_i - \mu, v \rangle^2.
+\]
+This method detects coordinated outliers aligned with a dominant direction, but misses diffuse corruption
+spread across several orthogonal directions.
+
+\subsection{Isolation Forest}
+Isolation Forests are ensemble tree-based methods that recursively partition the data space. Outliers are
+expected to be isolated in fewer random splits, leading to shorter path lengths in the trees. If
+$h(X_i)$ denotes the average path length of $X_i$ across the ensemble, the score is inversely related:
+\[
+\tau_i^{\text{IF}} \propto \frac{1}{h(X_i)}.
+\]
+This approach is distribution-agnostic and works well for samples that can be easily separated by recursive
+partitioning.
+
+\subsection{Local Outlier Factor (LOF)}
+The Local Outlier Factor compares the local density around a point to the densities around its neighbors.
+Given $k$-nearest neighbor distance $d_k(X_i)$, the local reachability density is
+\[
+\text{lrd}(X_i) = \left( \frac{1}{k} \sum_{X_j \in N_k(X_i)} \max\{d_k(X_j), \|X_i - X_j\|\} \right)^{-1}.
+\]
+The LOF score is then
+\[
+\tau_i^{\text{LOF}} = \frac{1}{k}\sum_{X_j \in N_k(X_i)} \frac{\text{lrd}(X_j)}{\text{lrd}(X_i)}.
+\]
+A high value indicates that $X_i$ lies in a region of significantly lower density than its neighbors.
+
+\subsection{$k$-Nearest Neighbor Distance}
+A simpler alternative to LOF is to score points directly by their distance to the $k$-th nearest neighbor:
+\[
+\tau_i^{k\text{-NN}} = d_k(X_i).
+\]
+Outliers are expected to lie farther from their neighbors, leading to larger values of $\tau_i^{k\text{-NN}}$.
+
+\subsection{Elliptic Envelope}
+Assuming that inliers follow a Gaussian distribution, one can fit a robust covariance estimator
+$\hat{\mu}, \hat{\Sigma}$ and compute the Mahalanobis distance
+\[
+\tau_i^{\text{EE}} = (X_i - \hat{\mu})^\top \hat{\Sigma}^{-1} (X_i - \hat{\mu}).
+\]
+This approach is effective when the inlier distribution is close to elliptical but degrades if the
+distribution is multi-modal or heavy-tailed.
+
+\medskip
+Together, these baselines provide a diverse set of challengers: norm-based, spectral, density-based,
+tree-based, and covariance-based. This diversity ensures that QUE is evaluated not just against trivial
+rules, but against widely-used outlier detection paradigms.
+
 
 \end{document}
