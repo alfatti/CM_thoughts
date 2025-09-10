@@ -187,6 +187,41 @@ Moreover, because the optimization is convex with a closed-form solution, comput
 scores is feasible in nearly linear time using randomized linear algebra (e.g.\ Johnson–Lindenstrauss
 sketches and truncated series expansion of $\exp(\alpha \Sigma)$).
 
+\section{Synthetic Dataset Construction}
+
+To evaluate Quantum Entropy scoring in a controlled environment, we construct synthetic
+high-dimensional datasets that contain both inliers and deliberately injected outliers.
+The inliers are sampled independently from an isotropic Gaussian distribution
+\[
+X_{\text{inlier}} \sim \mathcal{N}(0, I_d),
+\]
+where $d$ is the ambient feature dimension. These points are centered at the origin
+and exhibit spherical covariance.
+
+Outliers are introduced in $k$ distinct directions. For each direction $e_i$ in the
+standard basis, we generate a collection of samples from a shifted Gaussian
+\[
+X_{\text{outlier}} \sim \tfrac{1}{2}\,\mathcal{N}\!\left(+C\sqrt{\tfrac{k}{\varepsilon}}\,e_i,\,
+\sigma^2 I_d\right) + \tfrac{1}{2}\,\mathcal{N}\!\left(-C\sqrt{\tfrac{k}{\varepsilon}}\,e_i,\,
+\sigma^2 I_d\right),
+\]
+where $\varepsilon$ is the target corruption rate, $C$ is a scaling constant chosen
+so that the contribution of the outliers produces an inflated eigenvalue, and $\sigma$
+controls the amount of isotropic noise around each shifted mean.
+By design, these outliers have comparable norms to the inliers, so that they do not
+appear anomalous in isolation. Their effect is only visible in aggregate: an
+$\varepsilon$-fraction of such points is sufficient to distort the empirical covariance
+and bias the sample mean.
+
+The final synthetic dataset is the union of inliers and outliers,
+\[
+X = (1-\varepsilon)\,X_{\text{inlier}} \;\cup\; \varepsilon\,X_{\text{outlier}},
+\]
+with the total sample size $n$ adjusted so that the fraction of outliers matches the
+prescribed $\varepsilon$. This construction is particularly useful for benchmarking
+because it stresses the limitations of purely norm-based methods (which cannot
+distinguish the outliers individually) and highlights the need for algorithms like
+QUE scoring that can capture collective covariance distortions.
 
 
 \end{document}
