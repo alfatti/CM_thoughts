@@ -1,0 +1,23 @@
+. Kickoff (Week 1)
+Joint workshop: align on use case, success criteria, success metrics.
+Define scope: data sources, sample issuers/securities, assumptions.
+Confirm stakeholders: origination banker sponsor + data science lead.
+2. PoC Execution (Weeks 2–10)
+Data Science team responsibilities:
+Secure sandbox + ingest curated data.
+Build prototype models/dashboards.
+Share early outputs for banker feedback.
+Banker responsibilities:
+Provide domain knowledge, validate outputs.
+Participate in bi-weekly check-ins.
+3. Closeout (Weeks 11–12)
+Deliverables:
+Prototype (demo of capability).
+Business readout (value shown vs. manual baseline).
+Recommendation (scale / pivot / stop).
+Final decision with stakeholders.
+Engagement Logistics (Bottom Strip)
+Duration: ~1 Quarter
+Resources: small joint team (2–3 DS + 1–2 bankers + IT support)
+Environment: safe sandbox, no impact to production systems
+Outcome: evidence-based decision to scale or not
