@@ -1,6 +1,26 @@
 """
-Statistical test: does recent interaction frequency predict next-day interest?
-Model: logit(P(Y_{u,i,t+1}=1)) = α_u + γ_i + β * freq_{u,i,t}^{(w)}
+\paragraph{Test 1: Logistic Regression with Fixed Effects.}
+We estimate a panel logistic regression to assess whether recent investor--CUSIP interaction
+frequency carries predictive power for next--day interest.
+Let $Y_{u,i,t} \in \{0,1\}$ denote an indicator of whether investor $u$
+shows interest in CUSIP $i$ on day $t$,
+and define the $w$-day rolling frequency feature
+$f^{(w)}_{u,i,t} = \sum_{s=t-w}^{t-1} Y_{u,i,s}$.
+The model is
+\[
+\Pr(Y_{u,i,t+1}=1 \mid f^{(w)}_{u,i,t})
+ = \text{logit}^{-1}\!\big(\alpha_u + \gamma_i + \beta\, f^{(w)}_{u,i,t}\big),
+\]
+where $\alpha_u$ and $\gamma_i$ are investor and CUSIP fixed effects,
+and $\beta$ measures the marginal effect of recent activity.
+The null hypothesis $H_0\!:\beta=0$ corresponds to ``no predictive signal
+from past frequency'' beyond baseline investor and security propensities.
+Significance of $\hat\beta$ is evaluated using cluster-robust standard errors
+(grouped by investor or investor--CUSIP pair) to account for temporal dependence
+within panels.
+A positive and statistically significant $\hat\beta$ implies that
+higher recent interaction frequency increases the odds of next-day interest.
+
 """
 
 import pandas as pd
