@@ -1,0 +1,178 @@
+\section{Methodology: Time-Series Propensity Modeling for Client–CUSIP Interactions}
+
+\subsection{Objective and Setting}
+
+The goal of this model is to estimate, for each institutional client (or \emph{account}) $u$, 
+the probability that the client will show interest in a particular CUSIP $i$ at time step $t+1$, 
+given the client’s recent history of interactions with all CUSIPs in a chosen universe $\mathcal{I}$.
+
+Formally, for a fixed client $u$, we denote by
+\[
+X_u = \{ \mathbf{x}_t \in \{0,1\}^{M} \}_{t=1}^{T},
+\]
+the binary time series of interactions across $M$ CUSIPs over $T$ discrete time steps (typically daily snapshots). 
+The entry $x_{t,j} = 1$ indicates that client $u$ has traded or expressed interest in CUSIP $j$ on day $t$, 
+and $x_{t,j} = 0$ otherwise.
+
+For a target CUSIP $j^*$, the prediction task is defined as:
+\[
+\hat{p}_{t+1}^{(u,j^*)} = \mathbb{P}\big( x_{t+1,j^*} = 1 \,\big|\, X_{u,t-w+1:t} \big),
+\]
+where $w$ denotes the length of the look-back window, 
+and $X_{u,t-w+1:t}$ is the matrix of the client’s binary activity in the most recent $w$ days.
+
+Because the market is illiquid and interactions are sparse, 
+the time series for most client–CUSIP pairs consists primarily of long stretches of zeros punctuated by isolated positive events. 
+This characteristic motivates a modeling design that is simple, data-efficient, and robust to sparsity.
+
+\subsection{Data Representation and Preprocessing}
+
+For each client $u$, a binary interaction matrix $X_u \in \{0,1\}^{T \times M}$ is constructed from the trade history.  
+Each row corresponds to a trading day and each column corresponds to a unique CUSIP.  
+
+A preprocessing function generates overlapping temporal windows of length $w$:
+\[
+\mathbf{W}_t = X_{u,t-w+1:t} \in \mathbb{R}^{w \times M},
+\]
+which serve as model inputs.  
+For each window $\mathbf{W}_t$, the corresponding output label is the next-day activity in the target CUSIP:
+\[
+y_t = x_{t+1,j^*} \in \{0,1\}.
+\]
+This produces a supervised learning dataset 
+\[
+\mathcal{D}_u^{(j^*)} = \{(\mathbf{W}_t, y_t)\}_{t=w}^{T-1}.
+\]
+
+The binary inputs are optionally normalized or left unscaled.  
+Each $\mathbf{W}_t$ is treated as a multivariate path in $\mathbb{R}^{M}$, 
+and its temporal structure is preserved during subsequent transformation.
+
+\subsection{Feature Construction via Path Signatures}
+
+To capture sequential dependencies within each multivariate window $\mathbf{W}_t$, 
+we employ \emph{path signature transforms}, which provide a coordinate-free summary of ordered data.  
+A truncated signature of depth $m$ yields a fixed-length vector representation:
+\[
+\Phi(\mathbf{W}_t) = \mathrm{Sig}_m(\mathbf{W}_t) \in \mathbb{R}^{L_m},
+\]
+where $L_m$ is determined by the path dimension $M$ and truncation depth $m$.  
+For a given account, these features summarize higher-order interactions among CUSIPs over the look-back window.
+
+In practice, the truncated signatures are computed using the \texttt{iisignature} or \texttt{sigkernel} libraries.  
+The dimensionality of the signature grows combinatorially with $M$ and $m$; 
+for scalability, we restrict $m \in \{2,3,4,5,6\}$ and apply normalization when appropriate.
+
+\subsection{Signature Kernels and PDE Signature Kernels}
+
+As an alternative to explicit signature feature vectors, 
+we can define a positive-definite kernel function $k_{\mathrm{sig}}$ between two temporal windows 
+$\mathbf{W}_a$ and $\mathbf{W}_b$ that implicitly measures similarity in their sequential structure:
+\[
+k_{\mathrm{sig}}(\mathbf{W}_a, \mathbf{W}_b)
+  = \langle \mathrm{Sig}(\mathbf{W}_a), \mathrm{Sig}(\mathbf{W}_b) \rangle_{\mathcal{H}},
+\]
+where $\mathcal{H}$ is the signature Hilbert space.
+The practical computation uses the \texttt{sigkernel} package, 
+which combines an RBF base kernel with signature feature space propagation.
+
+To further enhance smoothness and stability, a \emph{PDE signature kernel} variant is used, 
+defined via a partial differential equation formulation that avoids explicit combinatorial expansion.  
+This kernel allows the model to operate directly on high-dimensional, multivariate paths without feature explosion.
+
+\subsection{Model Training}
+
+The learning algorithm follows a standard supervised regression procedure, 
+using Support Vector Regression (SVR) with either explicit signature features or pre-computed kernel matrices.
+
+\paragraph{Training Data Split.}
+The dataset $\mathcal{D}_u^{(j^*)}$ is split chronologically into training and test subsets (e.g., 80\% / 20\%).  
+No random shuffling is performed to preserve temporal order.
+
+\paragraph{Model Variants.}
+Two primary variants are trained for each account–CUSIP pair:
+\begin{enumerate}
+    \item \textbf{Truncated Signature + SVR.}
+    The truncated signatures $\Phi(\mathbf{W}_t)$ are computed explicitly, optionally normalized, and used as input features to an SVR model with either a linear or RBF kernel.
+    \item \textbf{Signature PDE Kernel + SVR.}
+    The kernel Gram matrices are computed directly between path samples, using an RBF static kernel with hyperparameter $\sigma$, followed by an SVR trained on the precomputed kernel.
+\end{enumerate}
+
+\paragraph{Hyperparameter Search.}
+The following hyperparameters are tuned via grid search and 5-fold cross-validation:
+\begin{itemize}
+    \item SVR penalty parameter $C \in \{10^0, 10^1, 10^2, 10^3, 10^4\}$,
+    \item RBF scale parameter $\gamma \in \{10^{-4}, \ldots, 10^{4}\}$,
+    \item signature truncation depth $m \in \{2,3,4,5,6\}$,
+    \item scaling factor for the input path,
+    \item kernel normalization flag (on/off),
+    \item PDE kernel base bandwidth $\sigma \in \{0.05, 0.1, 0.25, 0.5, 0.75, 1.0\}$.
+\end{itemize}
+
+Each configuration is evaluated by cross-validated $R^2$ on the training set, 
+and the best model (highest $R^2$ or lowest validation error) is selected for final testing.
+
+\subsection{Prediction and Evaluation}
+
+For each trained model, out-of-sample predictions are generated for the test set:
+\[
+\hat{y}_t = f(\mathbf{W}_t), \quad t \in \text{Test set}.
+\]
+Since the labels are binary (0/1), the regression output $\hat{y}_t \in \mathbb{R}$ is interpreted as a 
+continuous propensity score or probability estimate, optionally clipped to $[0,1]$.
+
+The performance metrics include:
+\begin{itemize}
+    \item \textbf{Mean Absolute Error (MAE):}
+    \[
+    \text{MAE} = \frac{1}{N}\sum_t |y_t - \hat{y}_t|,
+    \]
+    serving as a proxy for the Brier score.
+    \item \textbf{Area Under the ROC Curve (AUC):}
+    quantifying the model’s ability to rank true positive interactions above negatives.
+\end{itemize}
+
+Results are stored per model variant (Truncated Signature vs. PDE Kernel), 
+and the best configuration is recorded for each account–CUSIP pair.
+
+\subsection{Implementation Overview}
+
+The end-to-end training and evaluation pipeline is implemented in Python, 
+reusing the core structure of an earlier Bitcoin price prediction notebook, 
+but adapted for high-dimensional binary time series.
+
+Key implementation steps:
+\begin{enumerate}
+    \item \textbf{Data ingestion:} load binary matrices $X_u$ for each client.
+    \item \textbf{Window generation:} produce overlapping sub-paths $\mathbf{W}_t$ and next-step labels $y_t$.
+    \item \textbf{Tensor conversion:} cast inputs to \texttt{torch.double} tensors for signature kernel operations.
+    \item \textbf{Path augmentation:} apply \texttt{sigkernel.transform} with time and lead–lag channels.
+    \item \textbf{Feature computation:} compute truncated signatures or kernel Gram matrices.
+    \item \textbf{Model training:} fit SVR models with grid-searched hyperparameters.
+    \item \textbf{Evaluation and persistence:} compute MAE/AUC, save results to \texttt{.pkl} files for later aggregation.
+\end{enumerate}
+
+The overall code maintains the same logical structure as the univariate Bitcoin pipeline, 
+requiring only minimal modifications to accommodate multivariate binary inputs.
+
+\subsection{Future Extensions}
+
+The current version trains one model per client–CUSIP pair.  
+Future enhancements will include:
+\begin{itemize}
+    \item pooled models across clusters of similar clients,
+    \item hierarchical Bayesian priors for information sharing across accounts,
+    \item dynamic window sizing based on client activity frequency,
+    \item integration with LightGCN-style embeddings for hybrid temporal–collaborative modeling.
+\end{itemize}
+
+\subsection{Summary}
+
+In summary, this methodology converts each client’s trade history into a structured, 
+multivariate time series and leverages the algebraic properties of path signatures 
+to encode temporal dependencies.  
+A lightweight SVR serves as the predictive layer, providing interpretable, daily updated propensities 
+for client interest in specific CUSIPs.  
+Despite the sparsity of the underlying market data, 
+the signature-based representation enables stable and forward-looking predictions 
+while remaining computationally tractable for large-scale deployment.
