@@ -1,0 +1,84 @@
+\section{Per-Account Logistic Regression Model for Propensity Prediction}
+\label{sec:logit_model}
+
+\subsection{Motivation}
+In highly illiquid fixed-income markets, client trading activity is sparse and irregular, 
+resulting in time series of binary interactions (\(a_{u,i,t} \in \{0,1\}\)) where a value of~1 
+denotes that client \(u\) has shown interest (e.g., traded or requested a quote) in CUSIP~\(i\) at time~\(t\).
+The objective is to estimate, for each client--CUSIP pair~\((u,i)\),
+the probability that the client will show interest in that CUSIP at the next time step,
+\[
+\Pr(a_{u,i,t+1} = 1 \mid \text{historical interactions up to } t).
+\]
+To balance interpretability and parsimony, we model this probability using a logistic regression
+applied separately for each client, with explanatory variables summarizing recent trading behaviour.
+
+\subsection{Data Structure}
+For each client \(u\), let \(X_u \in \{0,1\}^{T \times M}\) denote the interaction matrix over \(T\) trading days 
+and \(M\) CUSIPs, where \(x_{u,i,t}=1\) if client \(u\) interacted with CUSIP~\(i\) on day~\(t\).
+For a given target CUSIP \(i\), we construct a sequence of feature vectors 
+\(\mathbf{x}_{u,i,t}\) summarizing the state of the client's trading activity up to day~\(t\),
+and a binary target variable \(y_{u,i,t} = a_{u,i,t+1}\).
+
+\subsection{Feature Construction}
+Each feature vector \(\mathbf{x}_{u,i,t}\) is composed of two categories of variables:
+
+\paragraph{CUSIP-specific recency features.}
+\begin{itemize}
+    \item \textbf{Recent activity indicator:} \(r^{(1)}_{u,i,t} = a_{u,i,t}\).
+    \item \textbf{Short-term activity count:} \(r^{(5)}_{u,i,t} = \sum_{k=0}^{4} a_{u,i,t-k}\).
+    \item \textbf{Medium-term activity count:} \(r^{(20)}_{u,i,t} = \sum_{k=0}^{19} a_{u,i,t-k}\).
+    \item \textbf{Days since last trade:} \(d_{u,i,t} = \min\{k \ge 1 : a_{u,i,t-k}=1\}\), truncated at a fixed horizon.
+\end{itemize}
+
+\paragraph{Portfolio-level context features.}
+\begin{itemize}
+    \item \textbf{Total trades across all CUSIPs in the past $w$ days:}
+          \(s^{(w)}_{u,t} = \sum_{i'=1}^{M} \sum_{k=0}^{w-1} a_{u,i',t-k}\).
+    \item \textbf{Breadth of trading:} number of distinct CUSIPs traded in the last $w$ days.
+    \item \textbf{Sector exposure:} proportion of recent trades in the same sector or rating bucket as CUSIP~\(i\).
+    \item \textbf{Time-since-last-any-trade:} days since any activity by the client.
+\end{itemize}
+
+Calendar controls (e.g., day-of-week or month indicators) can also be added to capture seasonality.
+
+\subsection{Model Specification}
+For each client \(u\) and target CUSIP \(i\), 
+we fit a logistic regression model of the form
+\[
+\Pr(a_{u,i,t+1}=1 \mid \mathbf{x}_{u,i,t})
+= \sigma(\beta_{0} + \mathbf{x}_{u,i,t}^\top \boldsymbol{\beta}),
+\]
+where \(\sigma(z) = (1 + e^{-z})^{-1}\) is the logistic link function, 
+\(\beta_{0}\) is an intercept term, and \(\boldsymbol{\beta}\) are regression coefficients.
+
+The model is estimated via maximum likelihood with an $L_1$ or $L_2$ regularization penalty:
+\[
+\hat{\boldsymbol{\beta}} = 
+\arg\min_{\boldsymbol{\beta}}
+\left\{
+ - \sum_{t} \big[ y_{u,i,t}\log p_{u,i,t} + (1 - y_{u,i,t})\log(1 - p_{u,i,t}) \big]
+ + \lambda \|\boldsymbol{\beta}\|_{q}
+\right\},
+\]
+where \(q=1\) (lasso) or \(q=2\) (ridge), and $\lambda$ controls regularization strength.
+Class imbalance is handled through inverse-frequency weighting of the positive class.
+
+\subsection{Interpretation and Output}
+The fitted coefficients provide an interpretable mapping between recent activity patterns
+and future trading propensity. 
+Positive coefficients correspond to behavioural drivers that increase the probability of renewed interest,
+while negative coefficients indicate lack of engagement or saturation.
+The predicted probabilities \(\hat{p}_{u,i,t+1}\) can be used as ranking scores
+to generate daily recommendation lists for each client.
+
+\subsection{Implementation Notes}
+\begin{itemize}
+    \item The model is implemented using \texttt{scikit-learn}'s 
+          \texttt{LogisticRegression} class with \texttt{class\_weight='balanced'}.
+    \item Training is performed per account; hyperparameters $(\lambda, q)$ 
+          can be tuned via time-series cross-validation.
+    \item Feature computation and model training can be vectorized across CUSIPs 
+          for scalability.
+    \item Output probabilities are stored as $\hat{p}_{u,i,t+1}$ for downstream ranking or evaluation.
+\end{itemize}
