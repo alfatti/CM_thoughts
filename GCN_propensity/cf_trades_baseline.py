@@ -127,7 +127,12 @@ def compute_weights(train_df: pd.DataFrame,
 
     # Normalize per user so each user's strongest link ≈ 1.0 (optional but useful)
     weights["weight"] = weights["weight"].astype(float)
-    max_per_user = weights.groupby("COUNTERPARTY")["weight"].transform(lambda x: x.max().clip(lower=1e-9))
+    
+    def _safe_max(x):
+        m = x.max()
+        return m if m > 1e-9 else 1e-9
+    
+    max_per_user = weights.groupby("COUNTERPARTY")["weight"].transform(_safe_max)
     weights["weight"] = weights["weight"] / max_per_user
 
     return weights
