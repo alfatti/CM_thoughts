@@ -294,31 +294,51 @@ def run_pipeline(args):
 
 
 # ------------------------
-# CLI
+# Loop over configurations
 # ------------------------
+weight_modes = ["binary", "freq", "notional", "hybrid", "time_decay"]
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Collaborative filtering baseline on trade data (unit = day).")
-    parser.add_argument("--input", type=str, required=True,
-                        help="Path to CSV file with trade data.")
-    parser.add_argument("--weight-mode", type=str, default="freq",
-                        choices=["binary", "freq", "notional", "hybrid", "time_decay"],
-                        help="Weighting scheme for implicit feedback.")
-    parser.add_argument("--tau", type=float, default=30.0,
-                        help="Time-decay horizon (days) for time_decay mode.")
-    parser.add_argument("--test-days", type=int, default=30,
-                        help="Number of most recent days to use as test set.")
-    parser.add_argument("--factors", type=int, default=64,
-                        help="Number of latent factors for ALS.")
-    parser.add_argument("--reg", type=float, default=0.1,
-                        help="Regularization parameter for ALS.")
-    parser.add_argument("--iterations", type=int, default=20,
-                        help="Number of ALS iterations.")
-    parser.add_argument("--k", type=int, default=20,
-                        help="K for Recall@K.")
-    return parser.parse_args()
+results = {}
 
+for mode in weight_modes:
+    print("\n" + "="*80)
+    print(f"Running CF with weight_mode = '{mode}'")
+    print("="*80)
+    
+    # Compute weights
+    weights_df = compute_weights(
+        train_df,
+        mode=mode,
+        tau=30.0  # only used in time_decay
+    )
+    
+    # Build sparse matrix
+    train_mat, user_index, item_index = build_user_item_matrix(weights_df)
+    
+    # Fit ALS model
+    model = AlternatingLeastSquares(
+        factors=64,
+        regularization=0.1,
+        iterations=20
+    )
+    model.fit(train_mat)
+    
+    # Evaluate Recall@K
+    recall_k = evaluate_recall_at_k(
+        model=model,
+        train_mat=train_mat,
+        test_df=test_df,
+        user_index=user_index,
+        item_index=item_index,
+        k=20
+    )
+    
+    results[mode] = recall_k
+    print(f"Recall@20 for mode={mode}: {recall_k:.4f}")
 
-if __name__ == "__main__":
+print("\n=== FINAL RESULTS ===")
+for mode, score in results.items():
+    print(f"{mode:12s} : {score:.4f}")
+
     args = parse_args()
     run_pipeline(args)
