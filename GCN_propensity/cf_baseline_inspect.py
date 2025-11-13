@@ -1,6 +1,69 @@
 #!/usr/bin/env python
 """
-cf_trades_baseline.py
+1. Sanity-check the Input Data
+Verify row counts for raw / train / test.
+Check training date range and whether chronological split worked.
+Count unique counterparties and CUSIPs in train and test.
+Check overlap:
+How many test counterparties also appear in train?
+How many test CUSIPs appear in train?
+If overlap is low → recall will be structurally capped (cold start), not a model error.
+2. Inspect Interaction Weights
+Summaries of the computed weights: min, max, percentiles.
+Look at distribution:
+Are weights all tiny?
+Are there extreme outliers (single user–CUSIP dominating)?
+Investigate top-weight pairs:
+Do they make sense in business terms?
+Do they correspond to active/high-volume trading relationships?
+3. Inspect User–Item Matrix Structure
+Overall matrix shape and density (it will be sparse, but how sparse?).
+Nonzero (NNZ) distribution:
+Count NNZ per user → identify users with very few interactions.
+Count NNZ per item → identify rarely traded CUSIPs.
+If many users or CUSIPs have only 1 trade → CF model has limited capacity to learn good representations.
+4. Inspect Learned Embeddings (ALS parameters)
+Shapes of user_factors and item_factors.
+Check for NaNs / Infs → indicates instability or bad scaling.
+Norm distribution:
+Are user and item embeddings collapsed to near-zero?
+Are some norms huge while others tiny?
+Healthy models have diverse but not extreme norm distributions.
+5. Inspect Local Behavior (Client-Level & Bond-Level)
+5.1 For a chosen CUSIP
+Look at the most similar items:
+Are neighbors plausible substitutes?
+Same rating/sector/issuer?
+5.2 For a chosen Counterparty
+Compare:
+top traded CUSIPs historically
+top recommended CUSIPs
+Should see nearby bonds, not random noise or pure popularity.
+6. Inspect Global Recommendation Patterns
+For many users, collect top-N recommendations.
+Count how often each CUSIP appears.
+If the same handful of CUSIPs appear in almost all users’ top lists →
+model behaves too much like MostPop.
+Could indicate:
+bad weighting design
+insufficient latent dimensionality
+too strong regularization
+very skewed training activity
+7. Business-Level Sanity Tests
+Pick a few known counterparties or CUSIPs:
+Do recommendations reflect what their actual trading profile looks like?
+Are recommended CUSIPs in the same issuer family, same duration bucket, same rating?
+Do some recommendations reflect recent shifts in trading behavior?
+8. Temporal Considerations
+Even in ALS (static CF), ask:
+Does the train/test separation introduce too much drift?
+Are recommendation failures explained by CUSIPs not existing anymore or clients not active in training?
+9. Pitfalls to Watch For
+Column normalization issues (CUSIP strings mismatched).
+Duplicate counterparties due to whitespace or inconsistent IDs.
+Weight scaling that suppresses personalization (e.g., all weights ≈ 0.01).
+Overly sparse clients causing noisy recommendations.
+Time-decay weights making everything vanish for long histories.
 
 Simple collaborative filtering baseline on trade data + debug/inspection tools.
 
