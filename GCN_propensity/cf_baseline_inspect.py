@@ -309,11 +309,17 @@ def inspect_global_recs(model, train_mat, item_index):
     max_users_to_scan = min(num_users, 5000)
 
     for u_id in range(max_users_to_scan):
-        recs = model.recommend(u_id,
-                               train_mat[u_id],
-                               N=20,
-                               filter_already_liked_items=True)
-        for item_id, score in recs:
+        recs = model.recommend(
+            u_id,
+            train_mat[u_id],
+            N=20,
+            filter_already_liked_items=True
+        )
+
+        # recs can be: [(item_id, score), ...] or rows with extra fields
+        for r in recs:
+            # r is something indexable; take the first element as item_id
+            item_id = int(r[0])
             global_recs.setdefault(item_id, 0)
             global_recs[item_id] += 1
 
@@ -322,6 +328,7 @@ def inspect_global_recs(model, train_mat, item_index):
     print("Top items by how often they appear in top-20 lists:")
     for item_id, count in top_items:
         print(f"{inv_item_index[item_id]}  -> in {count} user top-20 lists")
+
 
 
 def inspect_user_recs(model,
