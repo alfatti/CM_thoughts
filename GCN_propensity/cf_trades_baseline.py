@@ -205,12 +205,39 @@ def evaluate_recall_at_k(model,
         uid = user_index[u]
         # Recommend top-K items for this user
         # filter_already_liked_items=True to avoid trivial training items
-        recs = model.recommend(uid,
-                               train_mat[uid],
-                               N=k,
-                               filter_already_liked_items=True)
-        rec_item_ids = {item_id for item_id, score in recs}
-
+        # Recommend top-K items for this user
+        # NOTE: different implicit versions return either:
+        #  (i) list of (item_id, score), or
+        # (ii) tuple (ids_array, scores_array)
+        recs = model.recommend(
+            uid,
+            train_mat[uid],
+            N=k,
+            filter_already_liked_items=True,
+            # uncomment next line if you prefer the (ids, scores) form explicitly:
+            # return_scores=True,
+        )
+        
+        # --- Normalize to a set of item ids regardless of return shape ---
+        def _to_id_set(recs_obj):
+            # case A: tuple: (ids_array, scores_array)
+            if isinstance(recs_obj, tuple) and len(recs_obj) == 2:
+                ids, _scores = recs_obj
+                return set(map(int, np.asarray(ids).ravel()))
+            # case B: ndarray shape (N,2): [[id, score], ...]
+            if isinstance(recs_obj, np.ndarray) and recs_obj.ndim == 2 and recs_obj.shape[1] >= 1:
+                return set(map(int, recs_obj[:, 0].ravel()))
+            # case C: list of (id, score) tuples
+            try:
+                first = recs_obj[0]
+                if isinstance(first, (list, tuple, np.ndarray)) and len(first) >= 1:
+                    return {int(r[0]) for r in recs_obj}
+            except Exception:
+                pass
+            # Fallback: assume it's a flat list/array of ids
+            return set(map(int, np.asarray(recs_obj).ravel()))
+        
+        rec_item_ids = _to_id_set(recs)
         hit_count = len(test_items & rec_item_ids)
         recall_u = hit_count / float(len(test_items))
         recalls.append(recall_u)
