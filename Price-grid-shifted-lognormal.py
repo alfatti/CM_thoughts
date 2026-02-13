@@ -1,3 +1,111 @@
+\section*{Shifted Log-Normal Model: Simulation \& Pricing}
+
+\subsection*{Model Specification}
+
+Under the risk-neutral measure $\mathbb{Q}$, the underlying asset follows a shifted log-normal process:
+\begin{equation}
+dS_t = (r - q)(S_t + \alpha)\,dt + \sigma(S_t + \alpha)\,dW_t^{\mathbb{Q}}
+\end{equation}
+where $S_t$ is the spot price, $r$ is the risk-free rate, $q$ is the dividend yield, $\sigma$ is the volatility, $\alpha$ is the shift parameter, and $W_t^{\mathbb{Q}}$ is a standard Brownian motion under $\mathbb{Q}$.
+
+\subsection*{Analytical Solution}
+
+The shifted process admits an exact solution. Define $Y_t = S_t + \alpha$, then:
+\begin{equation}
+Y_t = Y_0 \exp\left[\left(r - q - \frac{1}{2}\sigma^2\right)t + \sigma W_t\right]
+\end{equation}
+
+Thus, the spot price at time $t$ is:
+\begin{equation}
+S_t = (S_0 + \alpha)\exp\left[\left(r - q - \frac{1}{2}\sigma^2\right)t + \sigma W_t\right] - \alpha
+\end{equation}
+
+\subsection*{European Call Option Pricing}
+
+The price of a European call option with strike $K$ and maturity $T$ is given by the shifted Black-Scholes formula:
+\begin{equation}
+C(S_0, K, T) = (S_0 + \alpha)e^{-qT}\Phi(d_1) - (K + \alpha)e^{-rT}\Phi(d_2)
+\end{equation}
+where:
+\begin{align}
+d_1 &= \frac{\ln\left(\frac{(S_0 + \alpha)e^{(r-q)T}}{K + \alpha}\right) + \frac{1}{2}\sigma^2 T}{\sigma\sqrt{T}} \\
+d_2 &= d_1 - \sigma\sqrt{T}
+\end{align}
+and $\Phi(\cdot)$ is the cumulative distribution function of the standard normal distribution.
+
+\subsection*{Greeks}
+
+The option sensitivities (Greeks) are modified by the shift parameter:
+
+\begin{align}
+\Delta &= e^{-qT}\Phi(d_1) \\
+\Gamma &= \frac{e^{-qT}\phi(d_1)}{(S_0 + \alpha)\sigma\sqrt{T}} \\
+\mathcal{V} &= (S_0 + \alpha)e^{-qT}\phi(d_1)\sqrt{T} \\
+\Theta &= -\frac{(S_0 + \alpha)e^{-qT}\phi(d_1)\sigma}{2\sqrt{T}} - r(K + \alpha)e^{-rT}\Phi(d_2) + q(S_0 + \alpha)e^{-qT}\Phi(d_1) \\
+\rho &= (K + \alpha)Te^{-rT}\Phi(d_2)
+\end{align}
+where $\phi(\cdot)$ is the probability density function of the standard normal distribution.
+
+\subsection*{Implementation Details}
+
+\subsubsection*{Path Simulation}
+The code simulates $N$ paths over $M$ time steps using the exact solution:
+\begin{equation}
+S_{t_{i+1}} = (S_{t_i} + \alpha)\exp\left[\left(r - q - \frac{1}{2}\sigma^2\right)\Delta t + \sigma\sqrt{\Delta t}\,Z_i\right] - \alpha
+\end{equation}
+where $Z_i \sim \mathcal{N}(0,1)$ are i.i.d. standard normal random variables and $\Delta t = T/M$.
+
+\subsubsection*{Monte Carlo Pricing}
+The call option price is estimated via:
+\begin{equation}
+\hat{C}_{\text{MC}} = e^{-rT}\frac{1}{N}\sum_{i=1}^{N}\max(S_T^{(i)} - K, 0)
+\end{equation}
+where $S_T^{(i)}$ is the terminal price of the $i$-th simulated path.
+
+\subsubsection*{Parameter Grid}
+The function generates a full factorial grid over seven parameters:
+\begin{equation}
+\mathcal{P} = \{S_0, T, r, q, K, \sigma, \alpha\} \in \mathbb{R}^7
+\end{equation}
+For each parameter $p \in \mathcal{P}$, we specify $(p_{\min}, p_{\max}, n_p)$ to create $n_p$ linearly spaced values. The total number of configurations is $\prod_{p \in \mathcal{P}} n_p$.
+
+\subsection*{Validation \& Error Analysis}
+
+The code computes the pricing error between Monte Carlo and analytical prices:
+\begin{equation}
+\epsilon = \hat{C}_{\text{MC}} - C_{\text{analytical}}
+\end{equation}
+
+Key error metrics reported:
+\begin{itemize}
+    \item Mean error: $\bar{\epsilon} = \frac{1}{N_{\text{config}}}\sum_{i=1}^{N_{\text{config}}} \epsilon_i$
+    \item Root mean squared error: $\text{RMSE} = \sqrt{\frac{1}{N_{\text{config}}}\sum_{i=1}^{N_{\text{config}}} \epsilon_i^2}$
+    \item Maximum absolute error: $\max_i |\epsilon_i|$
+\end{itemize}
+
+\subsection*{Constraints}
+
+The model requires the following constraints to ensure well-posedness:
+\begin{enumerate}
+    \item $S_0 + \alpha > 0$ (positivity of shifted spot)
+    \item $K + \alpha > 0$ (positivity of shifted strike)
+    \item $\sigma > 0$ (positive volatility)
+    \item $T > 0$ (positive time to maturity)
+\end{enumerate}
+
+\subsection*{Special Cases}
+
+\begin{itemize}
+    \item \textbf{Standard Black-Scholes:} $\alpha = 0$
+    \item \textbf{Bachelier (Normal) Model:} $\alpha \to \infty$ with $\sigma(S_0 + \alpha) = \sigma_{\text{normal}}$ held constant
+    \item \textbf{At-the-Money:} $S_0 = K \implies d_1 = \frac{(r-q)T + \frac{1}{2}\sigma^2T}{\sigma\sqrt{T}}$
+\end{itemize}
+
+
+
+
+
+
 import numpy as np
 from scipy.stats import norm
 from typing import Dict, Tuple
