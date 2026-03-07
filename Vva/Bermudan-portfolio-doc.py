@@ -300,6 +300,94 @@ This construction is intentionally a first-step Bermudan extension of DeepXVA ra
 If one wished to move beyond this approximation, the exercise decision itself would have to depend on the full adjusted value \(V_t=\hat V_t-XVA_t\), and the problem would become a nonlinear optimal stopping problem, more naturally expressed as a reflected BSDE or obstacle problem. That is a much harder class of problems and is not what the current code implements. The present section should therefore be read as documentation for the frozen-clean-policy Bermudan prototype.
 """
 
+\subsection*{Bermudan Put Portfolio Specification}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\hline
+\textbf{Component} & \textbf{Specification} \\
+\hline
+
+Risk factors & Diffusion state vector $X_t=(X_t^1,\dots,X_t^d)$ \\
+
+Dimension & $d = 20$ underlying assets \\
+
+Dynamics &
+$dX_t^k=\sigma_k X_t^k dW_t^{k,Q}$ \\
+
+Volatility & $\sigma_k = 20\%$ for all assets \\
+
+Correlation &
+$\rho_{ij}=0.3$ for $i\neq j$, $\rho_{ii}=1$ \\
+
+Initial state &
+$X_0$ evenly spaced in $[90,110]$ \\
+
+Exercise grid &
+Quarterly dates over $3$ years \\
+
+Grid times &
+$t_n=n/4,\; n=0,\dots,12$ \\
+
+Portfolio size &
+$M = 120$ Bermudan puts \\
+
+Underlying assets &
+First $8$ assets used in the portfolio \\
+
+Options per asset &
+$15$ Bermudan puts per asset \\
+
+Exercise dates &
+$\mathcal{E}_m=\{3,6,9,12\}$ (years $0.75,1.5,2.25,3.0$) \\
+
+Payoff &
+$s_m N_m (K_m - X_{t_n}^{a_m})^+$ \\
+
+Strike levels &
+$K_m \in \{0.9S_0^{a_m},\,S_0^{a_m},\,1.1S_0^{a_m}\}$ \\
+
+Notionals &
+$N_m \in \{5\times10^5,\,10^6,\,2\times10^6\}$ \\
+
+Position sign &
+$s_m \in \{+1,-1\}$ sampled randomly \\
+
+Discount curve &
+Flat OIS: $P(0,t)=e^{-0.03t}$ \\
+
+Reference rate &
+$r=3\%$ \\
+
+Counterparty intensity &
+$\lambda^C=1.5\%$ \\
+
+Recovery rate &
+$R_C=40\%$ \\
+
+Funding spread (borrow) &
+$r^{f,b}=r+100$ bp \\
+
+Funding spread (lend) &
+$r^{f,l}=r$ \\
+
+Collateral threshold &
+$H = 2\times10^6$ \\
+
+Monte Carlo paths &
+$20{,}000$ \\
+
+Continuation model &
+Single neural network $c_\theta(t,X_t;\varphi_m)$ shared across all options \\
+
+Exercise rule &
+Exercise if $g_m(X_{t_n}) \ge c_\theta(t_n,X_{t_n};\varphi_m)$ \\
+
+\hline
+\end{tabular}
+\end{table}
+
 path = Path("/mnt/data/bermudan_xva_section.tex")
 path.write_text(latex)
 print(f"Wrote {path}")
