@@ -718,3 +718,41 @@ if __name__ == "__main__":
         rep_all["comparison"].to_csv(
             "/mnt/user-data/outputs/ablation_comparison.csv")
         print("Cross-scorer comparison saved.")
+
+
+
+"""
+Good question to step back on. Here are the principles I'd anchor on, organized by what you're trying to conclude.
+
+---
+
+**On feature conclusions**
+
+**Require agreement across scorers before dropping anything.** A feature group that looks unimportant to KNN might be load-bearing for naive_spectral, because the two scorers use fundamentally different notions of "anomalous." The only safe pruning candidates are groups that score low importance *and* low recall drop *across all three scorers*. A single-scorer low-importance result is just a property of that scorer's geometry, not of the feature.
+
+**Distinguish "redundant" from "unimportant."** A group can show high Spearman r (rankings barely shift when removed) for two different reasons: either it genuinely carries no signal, or its signal is already captured by another group that's still present. The ablation can't tell these apart directly. If you drop TEMPORAL and rankings hold, it might be because RECEIVER is proxying for it. The fix is to also run ablations on reduced feature sets — after dropping the first candidate, rerun and see if something else now rises in importance. Don't treat the full-feature ablation as the final word.
+
+**Weight Lens 3 more than Lens 1 for operational decisions.** Lens 1 (Spearman / overlap) tells you about ranking stability across the whole score distribution. Lens 3 (recall drop) tells you about detection at the decision boundary — the top-N transactions you'd actually flag for investigation. For fraud detection, you almost always care about the top of the distribution, so a group that barely moves Spearman but tanks recall by 15% is dangerous to drop, even if it looks low-importance in Lens 1.
+
+**Window sensitivity is a feature design signal, not just a pruning signal.** If the 30d window dominates and 7d and 90d barely matter, that's telling you your anomalies operate on a monthly behavioral cycle. That's actionable beyond ablation — it means you could simplify your pipeline by only computing features on the dominant window, and it informs how you'd detect regime changes in the account (e.g., a dormant account suddenly active).
+
+**Treat composite flags with suspicion.** They almost always show low independent importance in ablation because they're constructed from other features already in the set. Their value is interpretability at scoring time, not discriminative power in the feature space. Don't drop them based on ablation — evaluate them separately on whether they make flagged transactions explainable to a human reviewer.
+
+---
+
+**On model conclusions**
+
+**Cross-scorer disagreement is a finding, not a problem to resolve.** If KNN and naive_spectral rank a feature group differently, that means the two models are sensitive to different geometric properties of that group. The right response is not to pick a winner — it's to understand *why* they disagree. Spectral methods care about connectivity and cluster structure; KNN cares about local density. A group that matters to spectral but not KNN likely encodes cluster membership signals rather than pure distance anomalies.
+
+**Scorer agreement on importance ranking is stronger evidence than agreement on scores.** The cross-scorer comparison in Lens 4 uses rank correlation, not score correlation, for good reason. Score scales are incomparable across scorers — KNN distances and spectral residuals live in completely different spaces. Rank agreement means the scorers are identifying the same transactions as anomalous through different lenses, which is the only meaningful cross-model comparison you can make without labels.
+
+**The synthetic anomaly results are conditional on your anomaly design.** The synthetic injection perturbs all feature groups simultaneously, so Lens 3 measures marginal contribution — how much recall drops when one group is absent while all others are present. This systematically underestimates the importance of groups that are correlated with others. It also only tests the anomaly types you thought to synthesize. A group that scores low recall drop might be critical for detecting a real anomaly pattern you didn't model. This is the hardest limitation to work around without real labeled examples.
+
+**Use model disagreement to prioritize investigation, not to average.** If KNN flags transaction X and naive_spectral doesn't, that's more interesting than a transaction both flag. The former suggests X is locally isolated but not globally disconnected — a pattern worth understanding. Building a consensus score (e.g., average rank across scorers) loses this signal. Better to track which scorer flagged each transaction and treat multi-scorer agreement as a confidence tier.
+
+---
+
+**The meta-principle tying it all together**
+
+Unsupervised ablation can tell you about the *internal consistency* of your models — which features drive their specific geometric decisions. It cannot tell you about *ground truth validity* — whether those decisions correspond to real anomalies. So every conclusion you draw has a ceiling: it's valid conditional on your scorer's definition of anomaly. The moment you get even a small set of confirmed fraud labels, even 20-30 cases, you should rerun the ablation with those as the Lens 3 injection set instead of synthetic perturbations. That immediately converts the recall metric from a proxy into a real signal, and all the other principles above become much sharper.
+"""
