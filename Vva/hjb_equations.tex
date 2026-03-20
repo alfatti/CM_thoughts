@@ -1,0 +1,150 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{geometry}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{booktabs}
+\usepackage[colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue]{hyperref}
+
+\geometry{margin=2.2cm}
+
+\title{\textbf{Nonlinear HJB Equations in Finance:\\Selected Examples}}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+\vspace{-1.5em}
+
+\noindent
+In classical derivative pricing, the governing PDEs---Black-Scholes, Heston, CIR---are \emph{linear} in the
+unknown $V$, even when their coefficients depend on state variables such as the spot price or stochastic
+variance. Linearity is preserved because the replicating hedge is determined exogenously by no-arbitrage
+alone. The situation changes fundamentally when an agent optimises over a control. The Hamilton-Jacobi-Bellman
+(HJB) equation, which characterises the value function of a stochastic optimal control problem via dynamic
+programming, is generically \emph{nonlinear} in the value function: after substituting the optimal control
+back into the right-hand side, the maximised Hamiltonian produces terms that are rational or quadratic in
+the value function and its derivatives. This endogenous nonlinearity is structurally analogous to the
+advection term $(\mathbf{u}\cdot\nabla)\mathbf{u}$ in Navier-Stokes, where the solution itself acts as its
+own coefficient. Superposition fails, classical solution theory no longer applies, and the appropriate
+framework becomes that of \emph{viscosity solutions}. The examples below illustrate the range of nonlinear
+HJB equations that arise in quantitative finance.
+
+\bigskip
+\hrule
+\bigskip
+
+\subsection*{1. Merton Portfolio Optimisation}
+
+An investor allocates fraction $\pi$ of wealth $W$ to a risky asset with drift $\mu$ and volatility $\sigma$,
+maximising expected utility. The HJB equation for the value function $V(W,t)$ is
+\[
+  \partial_t V + \max_{\pi}\left\{
+    \tfrac{1}{2}\sigma^2\pi^2 W^2\, V_{WW} + (\mu\pi W + rW)\,V_W
+  \right\} = 0.
+\]
+Substituting the optimal weight $\pi^* = -(\mu - r)\,V_W / (\sigma^2 W V_{WW})$ yields the reduced PDE
+\[
+  \partial_t V + rW\,V_W - \frac{(\mu-r)^2}{2\sigma^2}\frac{V_W^2}{V_{WW}} = 0,
+\]
+where the term $(V_W)^2 / V_{WW}$ is a \emph{rational} nonlinearity in the value function---absent from
+any linear pricing PDE.
+
+\subsection*{2. Uncertain Volatility / Robust Control (Black-Scholes-Barenblatt)}
+
+When volatility is unspecified but bounded, $\sigma \in [\sigma_{\min}, \sigma_{\max}]$, the worst-case
+pricing problem is a zero-sum stochastic game. The value function satisfies the
+Hamilton-Jacobi-Bellman-Isaacs (HJBI) equation
+\[
+  \partial_t V + \frac{1}{2}\hat{\sigma}\!\left(\tfrac{\partial^2 V}{\partial S^2}\right)^{\!2}
+  S^2\,\frac{\partial^2 V}{\partial S^2} + rS\,\frac{\partial V}{\partial S} - rV = 0,
+\]
+where $\hat{\sigma}(\Gamma) = \sigma_{\max}$ if $\Gamma > 0$ and $\sigma_{\min}$ if $\Gamma < 0$. The
+diffusion coefficient thus depends on the \emph{sign of} $\partial^2 V/\partial S^2$, making the effective
+volatility endogenous to the solution itself.
+
+\subsection*{3. Optimal Execution (Almgren-Chriss type)}
+
+A trader liquidates inventory $q$ at rate $u$ over $[0,T]$, minimising expected cost plus quadratic
+inventory risk. The HJB equation is
+\[
+  \partial_t V + \min_{u}\!\left\{
+    -u\,V_q + \eta\, u^2 + \tfrac{1}{2}\gamma\sigma^2 q^2
+  \right\} = 0.
+\]
+Inserting $u^* = V_q/(2\eta)$ gives
+\[
+  \partial_t V - \frac{(V_q)^2}{4\eta} + \frac{1}{2}\gamma\sigma^2 q^2 = 0.
+\]
+The term $(V_q)^2/4\eta$ is \emph{quadratic} in the first derivative of $V$---the precise analogue of
+$(\mathbf{u}\cdot\nabla)\mathbf{u}$ in Navier-Stokes.
+
+\subsection*{4. Differential Borrowing and Lending Rates}
+
+When the borrowing rate $r_b$ exceeds the lending rate $r_l$, the relevant rate depends on the sign of the
+cash account $X = V - SV_S$. The option value satisfies
+\[
+  \partial_t V + \tfrac{1}{2}\sigma^2 S^2 V_{SS} + rS\,V_S
+  - r_l\max(V - SV_S,\,0) - r_b\min(V - SV_S,\,0) = 0.
+\]
+Nonlinearity enters through $\max(\cdot,0)$ and $\min(\cdot,0)$, which depend on $V$ and $V_S$.
+
+\subsection*{5. Multi-Asset Market Making (Bergault, Evangelista, Gu\'eant, Vieira)}
+
+Consider a market maker quoting bid and ask prices across $d$ correlated assets with inventory vector
+$q\in\mathbb{R}^d$ and reference prices following correlated Brownian motions with covariance matrix
+$\Sigma$. Under Model~B (mean-variance objective), the HJB equation reduces via an ansatz to the
+Hamilton-Jacobi equation for the value adjustment $\theta(t,q)$:
+\[
+  0 = \partial_t\theta(t,q) - \frac{\gamma}{2}\,q^\top\Sigma\, q
+  + \sum_{i=1}^{d} z^i\left[
+    H^{i,b}_0\!\!\left(\frac{\theta(t,q)-\theta(t,q+z^i e_i)}{z^i}\right)
+    + H^{i,a}_0\!\!\left(\frac{\theta(t,q)-\theta(t,q-z^i e_i)}{z^i}\right)
+  \right],
+\]
+with terminal condition $\theta(T,q)=0$, where $H^{i,b}_0$ and $H^{i,a}_0$ are the \emph{Hamiltonian
+functions} defined by
+\[
+  H^{i,b}_0(p) = \sup_{\delta}\,\Lambda^{i,b}(\delta)\,(\delta - p),
+\]
+and analogously for the ask side. The Hamiltonians encode the liquidity-adjusted trade-off between
+spread revenue and fill probability. Since $H^{i,b}_0$ and $H^{i,a}_0$ are nonlinear functions evaluated
+at \emph{finite differences of $\theta$}, the equation is nonlinear in the value function. The optimal
+bid and ask quotes are then recovered as
+\[
+  \delta^{i,b\,*}_t = \tilde\delta^{i,b\,*}_0\!\left(
+    \frac{\theta(t,q_{t-}) - \theta(t,q_{t-}+z^i e_i)}{z^i}
+  \right), \qquad
+  \delta^{i,a\,*}_t = \tilde\delta^{i,a\,*}_0\!\left(
+    \frac{\theta(t,q_{t-}) - \theta(t,q_{t-}-z^i e_i)}{z^i}
+  \right).
+\]
+Because the true $\theta$ is computationally intractable for large $d$, the paper approximates the
+Hamiltonians by quadratic functions, reducing the HJB to a matrix Riccati ODE solvable in closed form.
+In the ergodic limit, the optimal half-spread and skew for asset $i$ simplify to
+\[
+  \frac{\breve\delta^{i,a}_t + \breve\delta^{i,b}_t}{2}
+  = \frac{1}{2}\sqrt{\gamma}\,z^i\,e_i^\top \Gamma\, e_i + \frac{1}{k^i},
+  \qquad
+  \frac{\breve\delta^{i,a}_t - \breve\delta^{i,b}_t}{2}
+  = -\sqrt{\gamma}\,q_{t-}^\top \Gamma\, e_i,
+\]
+where $\Gamma = D_+^{-1/2}(D_+^{1/2}\Sigma D_+^{1/2})^{1/2}D_+^{-1/2}$ encodes the interplay between
+price risk and liquidity risk across all assets.
+
+\bigskip
+\hrule
+\bigskip
+
+\noindent\small
+\textbf{Summary.} In all five cases, nonlinearity in the value function arises from substituting an
+optimal control back into the Hamiltonian. The locus and structure of the nonlinearity varies---rational
+($V_W^2/V_{WW}$ in Merton), quadratic in gradients (optimal execution), switching (uncertain volatility,
+differential rates), or evaluated at finite differences of $\theta$ (market making)---but the common
+feature is that the solution itself determines the operator acting on it, precluding superposition and
+requiring viscosity solution theory for rigorous treatment.
+
+\end{document}
