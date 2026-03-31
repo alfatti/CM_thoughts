@@ -70,6 +70,57 @@ def piecewise_constant(t: float, knots: np.ndarray, values: np.ndarray) -> float
 
 
 # ----------------------------
+# Portfolio configuration
+# ----------------------------
+
+@dataclass
+class PortfolioConfig:
+    """
+    Central configuration for all hard-coded parameters in example_build_problem
+    and solve_with_your_bsde_solver.  Edit here instead of touching the build logic.
+    """
+    # Simulation / time grid
+    d: int = 80                        # number of caplets / forward rates
+    T_max: float = 20.0                # horizon (years)
+    dt: float = 1.0 / 52.0            # time-step (weekly)
+    n_paths: int = 50_000              # Monte Carlo paths
+    seed: int = 123                    # RNG seed
+
+    # Tenor grid
+    tenor_dt: float = 0.25             # quarterly reset / payment spacing
+
+    # Discount curve (flat continuous zero rate)
+    r0: float = 0.03
+
+    # Volatility (flat Black vol for all forwards)
+    sigma_const: float = 0.20
+
+    # Correlation (exponential decay in tenor time)
+    corr_a: float = 0.2
+
+    # Initial forward curve (linearly interpolated between these two values)
+    F0_start: float = 0.03
+    F0_end: float = 0.04
+
+    # Caplet strikes: offsets around ATM forward (in bp converted to rate)
+    strike_bumps_bp: Tuple[int, ...] = (-100, -50, 0, 50, 100)
+
+    # Notional per caplet
+    notional: float = 1e6
+
+    # Collateral (threshold CSA)
+    threshold_H: float = 1e6
+
+    # Counterparty hazard rate (flat, in decimal, e.g. 0.015 = 150 bp)
+    lambda_C: float = 0.015
+    recovery: float = 0.40
+
+    # Funding spreads (decimal)
+    spread_borrow: float = 0.010       # borrow spread over OIS
+    spread_lend: float = 0.000         # lend  spread over OIS
+
+
+# ----------------------------
 # Tenor and discounting
 # ----------------------------
 
@@ -584,76 +635,68 @@ class XvaProblem:
 # ----------------------------
 
 def example_build_problem(
-    *,
-    d: int = 80,
-    T_max: float = 20.0,
-    dt: float = 1.0 / 52.0,      # weekly
-    n_paths: int = 50_000,
-    seed: int = 123,
-    threshold_H: float = 1e6,
+    cfg: PortfolioConfig = PortfolioConfig(),
 ) -> Tuple[XvaProblem, Dict[str, Any]]:
     """
     Returns:
       - XvaProblem (ready for a BSDE solver)
       - metadata dict with portfolio & model summary
 
+    All tunable parameters are drawn from *cfg* (a PortfolioConfig instance).
     NOTE: n_paths=50k is heavy; adjust for your GPU/CPU.
     """
     # Tenor: quarterly reset/pay for d caplets -> need d+2 tenor points
     # We'll create quarterly tenor regardless of dt
-    tenor_dt = 0.25
-    T = np.arange(0.0, (d + 2) * tenor_dt, tenor_dt)  # length d+2
+    T = np.arange(0.0, (cfg.d + 2) * cfg.tenor_dt, cfg.tenor_dt)  # length d+2
     tenor = TenorGrid(T=T)
 
-    # Deterministic discount curve: flat r=3%
-    r0 = 0.03
-    disc = DiscountCurve(discount_0t=lambda t: math.exp(-r0 * t))
+    # Deterministic discount curve: flat r=r0
+    disc = DiscountCurve(discount_0t=lambda t: math.exp(-cfg.r0 * t))
 
-    # Vols: simple hump or flat; start flat 20%
-    sigmas = 0.20 * np.ones((tenor.d,), dtype=float)
+    # Vols: simple hump or flat; start flat sigma_const
+    sigmas = cfg.sigma_const * np.ones((tenor.d,), dtype=float)
     vol = VolModel(d=tenor.d, sigmas_const=sigmas)
 
     # Correlation: exp in tenor time
-    corr = make_exp_corr(tenor.d, tenor.T, a=0.2)
+    corr = make_exp_corr(tenor.d, tenor.T, a=cfg.corr_a)
 
     # Time grid for BSDE/simulation (0..T_max)
-    time_grid = np.arange(0.0, T_max + 1e-12, dt)
-    time_grid = np.unique(np.clip(time_grid, 0.0, T_max))
+    time_grid = np.arange(0.0, cfg.T_max + 1e-12, cfg.dt)
+    time_grid = np.unique(np.clip(time_grid, 0.0, cfg.T_max))
 
-    # Initial forward curve: e.g. upward sloping 3%->4%
-    F0 = np.linspace(0.03, 0.04, tenor.d)
+    # Initial forward curve: e.g. upward sloping F0_start->F0_end
+    F0 = np.linspace(cfg.F0_start, cfg.F0_end, tenor.d)
 
-    sim = ForwardRateSimulator(tenor=tenor, vol=vol, corr=corr, time_grid=time_grid, seed=seed).simulate(
-        n_paths=n_paths, F0=F0
+    sim = ForwardRateSimulator(tenor=tenor, vol=vol, corr=corr, time_grid=time_grid, seed=cfg.seed).simulate(
+        n_paths=cfg.n_paths, F0=F0
     )
 
     # Portfolio: many caplets across tenors & strikes
     # Example: 5 strikes per tenor, 1k notional each; random long/short for netting richness
-    rng = np.random.default_rng(seed + 1)
+    rng = np.random.default_rng(cfg.seed + 1)
     caplets: List[Caplet] = []
-    strikes_bps = np.array([-100, -50, 0, 50, 100]) * 1e-4  # +/- 100bp around ATM proxy
+    strikes_bps = np.array(cfg.strike_bumps_bp) * 1e-4  # convert bp to rate
     for i in range(1, tenor.d + 1):
         # proxy "ATM" strike as initial forward
         K_atm = float(F0[i - 1])
         for bump in strikes_bps:
             K = max(1e-4, K_atm + float(bump))
-            notional = 1e6
             is_long = bool(rng.integers(0, 2))
-            caplets.append(Caplet(i=i, K=K, notional=notional, is_long=is_long))
+            caplets.append(Caplet(i=i, K=K, notional=cfg.notional, is_long=is_long))
     portfolio = CapletPortfolio(tenor=tenor, caplets=caplets)
 
     # Collateral (threshold CSA)
-    collateral = CollateralModel(threshold_H=threshold_H)
+    collateral = CollateralModel(threshold_H=cfg.threshold_H)
 
-    # Counterparty hazard: flat 150bp
-    knots = np.array([0.0, T_max])
-    lambdas = np.array([0.015])  # piecewise constant
-    cpty = CounterpartyModel(knots=knots, lambdas=lambdas, recovery=0.40)
+    # Counterparty hazard: flat lambda_C
+    knots = np.array([0.0, cfg.T_max])
+    lambdas = np.array([cfg.lambda_C])  # piecewise constant
+    cpty = CounterpartyModel(knots=knots, lambdas=lambdas, recovery=cfg.recovery)
 
-    # Funding: borrow spread 100bp, lend spread 0bp
+    # Funding spreads
     funding = FundingModel(
-        spread_borrow=lambda t: 0.010,
-        spread_lend=lambda t: 0.000,
+        spread_borrow=lambda t: cfg.spread_borrow,
+        spread_lend=lambda t: cfg.spread_lend,
     )
 
     # Build driver and training data
@@ -664,15 +707,15 @@ def example_build_problem(
     meta = {
         "d": tenor.d,
         "M": portfolio.M,
-        "T_max": T_max,
-        "dt": dt,
-        "n_paths": n_paths,
-        "r0": r0,
+        "T_max": cfg.T_max,
+        "dt": cfg.dt,
+        "n_paths": cfg.n_paths,
+        "r0": cfg.r0,
         "lambda_C": float(lambdas[0]),
         "recovery_C": cpty.R,
-        "funding_spread_b": 0.010,
-        "funding_spread_l": 0.000,
-        "threshold_H": threshold_H,
+        "funding_spread_b": cfg.spread_borrow,
+        "funding_spread_l": cfg.spread_lend,
+        "threshold_H": cfg.threshold_H,
     }
     return problem, meta
 
@@ -692,14 +735,8 @@ def solve_with_your_bsde_solver(bsde_solver: Any) -> Dict[str, Any]:
             terminal_value=0.0,
         )
     """
-    problem, meta = example_build_problem(
-        d=80,
-        T_max=20.0,
-        dt=1.0 / 52.0,
-        n_paths=20_000,   # start smaller
-        seed=123,
-        threshold_H=1e6,
-    )
+    cfg = PortfolioConfig(n_paths=20_000)   # start smaller; override any field here
+    problem, meta = example_build_problem(cfg)
 
     result = bsde_solver.solve(
         t=problem.data.t,
