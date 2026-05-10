@@ -1,0 +1,468 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{bbm}
+\usepackage{booktabs}
+\usepackage{microtype}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue]{hyperref}
+
+\newtheorem{remark}{Remark}
+\newcommand{\Q}{\mathbb{Q}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\F}{\mathcal{F}}
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\dW}{\dd W^{\Q}}
+\newcommand{\norm}[1]{\left\lVert#1\right\rVert}
+
+\title{\textbf{Deep BSDE Pricing of Interest Rate Caplets\\
+under the Three-Factor Cheyette Model}\\[0.5em]
+\large A White Paper Chapter}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\bigskip
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+
+We present a deep BSDE solver for European caplet pricing under the
+three-factor exponential Cheyette model of Beyna, Chiarella \& Kang
+\cite{BCK2012}. The method follows the framework of Han, Jentzen \& E
+\cite{HJE2018} and the xVA extension of Gnoatto, Picarelli \& Reisinger
+\cite{GPR2022}, specialised to a non-recursive, linearly-driven backward
+SDE whose solution coincides with the caplet price. The contribution is
+twofold: (i) a careful derivation of the caplet FBSDE and its discretisation
+within the Cheyette state-space; (ii) an architecture designed to meet a
+stringent accuracy threshold of $0.1$ basis points vega-adjusted error, which
+is approximately two orders of magnitude tighter than standard benchmarks in
+the literature.
+
+Although the Cheyette caplet admits a closed-form Black-type formula
+\cite{BCK2012}, the deep BSDE framework is motivated by three considerations:
+it generalises immediately to instruments without analytical solutions
+(Bermudan swaptions, callable exotics, xVA integrals); it produces the
+$\Delta$-hedge $\widehat{Z}_t$ as a direct output; and it provides a
+pathwise simulation engine for exposure calculations without nested Monte
+Carlo.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Model: Three-Factor Exponential Cheyette}
+\label{sec:model}
+
+Under the risk-neutral measure $\Q$, the short rate is
+\begin{equation}
+  r(t) = f(0,t) + X_1(t) + X_2(t) + X_3(t) + X_4(t),
+\end{equation}
+where $f(0,t)$ is the initial instantaneous forward rate (taken as a flat
+curve $f_0$ throughout) and the state vector
+$X = (X_1, X_2, X_3, X_4)^\top \in \R^4$ satisfies
+\begin{align}
+  \dd X_1 &= \bigl(V_{11}^{(1)}(t) + V_{12}^{(1)}(t)\bigr)\dd t
+             + c\,\dd W^{(1)}_t, \label{eq:X1}\\
+  \dd X_2 &= \bigl(V_{21}^{(1)}(t) + V_{22}^{(1)}(t) - \lambda_1 X_2\bigr)\dd t
+             + P_1(t)\,\dd W^{(1)}_t, \label{eq:X2}\\
+  \dd X_3 &= \bigl(V_{11}^{(2)}(t) - \lambda_2 X_3\bigr)\dd t
+             + P_2(t)\,\dd W^{(2)}_t, \label{eq:X3}\\
+  \dd X_4 &= \bigl(V_{11}^{(3)}(t) - \lambda_3 X_4\bigr)\dd t
+             + P_3(t)\,\dd W^{(3)}_t, \label{eq:X4}
+\end{align}
+with $X_0 = 0$. Here $W^{(1)}, W^{(2)}, W^{(3)}$ are independent standard
+Brownian motions under $\Q$; $P_k(t) = a_1^{(k)} t + a_0^{(k)}$ are
+linear-in-time volatility functions; $\lambda_k > 0$ are mean-reversion
+speeds; and $c > 0$ is a constant volatility shift for the first factor. The
+deterministic functions $V_{ij}^{(k)}(t)$ are integrated-variance accumulators
+that enforce the $\Q$-drift required by the HJM no-arbitrage condition.
+
+The state dynamics can be written compactly as
+\begin{equation}
+  \dd X_t = \mu(t, X_t)\dd t + \sigma(t)\dW_t, \qquad X_0 = 0,
+  \label{eq:X}
+\end{equation}
+where $\mu: [0,T] \times \R^4 \to \R^4$ collects the drifts in
+\eqref{eq:X1}--\eqref{eq:X4} and $\sigma(t) \in \R^{4 \times 3}$ is the
+diffusion matrix
+\begin{equation}
+  \sigma(t) =
+  \begin{pmatrix}
+    c    & 0      & 0      \\
+    P_1(t) & 0    & 0      \\
+    0    & P_2(t) & 0      \\
+    0    & 0      & P_3(t)
+  \end{pmatrix}.
+\end{equation}
+The rank of $\sigma$ is three; the $(X_1, X_2)$ block shares Brownian
+$W^{(1)}$, producing the off-diagonal covariance that drives the
+mixed-derivative term in the pricing PDE.
+
+Zero-coupon bond prices are exponential-affine in $X$:
+\begin{equation}
+  B(t, T; X_t) = \frac{B(0,T)}{B(0,t)}
+    \exp\!\Bigl[
+      -G_1^{(1)}(t,T) X_1 - G_2^{(1)}(t,T) X_2
+      - G_1^{(2)}(t,T) X_3 - G_1^{(3)}(t,T) X_4
+      - H(t,T)
+    \Bigr],
+  \label{eq:bond}
+\end{equation}
+where the $G$ functions are integrals of the volatility structure and
+$H(t,T) > 0$ is a convexity adjustment. Explicit forms are given in
+\cite{BCK2012}.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Caplet FBSDE Formulation}
+\label{sec:fbsde}
+
+\subsection{Caplet payoff and the forward measure connection}
+
+A caplet fixing at $T_C$ and paying at $T_B = T_C + \Delta$ has payoff (at
+$T_B$)
+\begin{equation}
+  \Delta \cdot \max\bigl(R(T_C, T_B) - K,\, 0\bigr),
+\end{equation}
+where $R(T_C, T_B) = \Delta^{-1}(B(T_C, T_B)^{-1} - 1)$ is the spot LIBOR
+at $T_C$. Discounting to $T_C$ produces the terminal condition
+\begin{equation}
+  \phi(X_{T_C}) = B(T_C, T_B; X_{T_C}) \cdot \Delta \cdot
+    \max\!\bigl(R(T_C, T_B; X_{T_C}) - K,\, 0\bigr).
+  \label{eq:terminal}
+\end{equation}
+The model price at $t = 0$ is
+\begin{equation}
+  V_0 = \E^{\Q}\!\left[\exp\!\Bigl(-\int_0^{T_C} r(s)\dd s\Bigr)
+         \phi(X_{T_C})\right].
+  \label{eq:price}
+\end{equation}
+
+\subsection{The backward SDE}
+
+By the Feynman--Kac theorem, $V_t \equiv \widehat{V}(t, X_t)$ satisfies the
+forward-backward SDE (FBSDE): the forward component is \eqref{eq:X} and the
+backward component is
+\begin{equation}
+  \widehat{V}_t = \phi(X_{T_C})
+    + \int_t^{T_C} r(s, X_s)\, \widehat{V}_s \dd s
+    - \int_t^{T_C} \widehat{Z}_s^\top \dW_s,
+  \label{eq:bsde}
+\end{equation}
+where $r(t, X_t) = f_0 + \sum_{i=1}^4 X_i(t)$ and the control process
+\begin{equation}
+  \widehat{Z}_t = \nabla_X \widehat{V}(t, X_t)^\top \sigma(t) \in \R^3
+  \label{eq:Z}
+\end{equation}
+is the $3$-dimensional martingale integrand, one component per Brownian
+motion.
+
+Several structural properties of \eqref{eq:bsde} are decisive for the
+numerical treatment.
+
+\begin{remark}[Linear, non-recursive driver]
+The driver $h(t, x, y, z) = -r(t, x)\, y$ is linear in $y$ and independent
+of $z$. In the terminology of \cite{GPR2022}, \S3.2, this is the
+\emph{non-recursive} case: the backward component does not feed back into the
+forward dynamics, so Algorithm~1 of \cite{GPR2022} applies directly without
+the recursive nesting required for FVA-type adjustments.
+\end{remark}
+
+\begin{remark}[Lipschitz driver]
+Since $r(t, X_t)$ is bounded on bounded sets, $h$ is uniformly Lipschitz in
+$y$ on any compact region. The a priori error bounds of Han \& Long
+\cite{HL2020}, Theorem~1', therefore apply and ensure that
+\begin{equation}
+  \sup_{t \in [0,T_C]} \E\bigl|\widehat{V}_t - \widehat{V}^{\,\xi,\rho}_t\bigr|^2
+  + \int_0^{T_C} \E\bigl|\widehat{Z}_t - Z^{\rho}_t\bigr|^2 \dd t
+  \;\leq\; C\left(\Delta t
+    + \E\bigl|\phi(X_{T_C}) - \widehat{V}^{\,\xi,\rho}_{T_C}\bigr|^2\right),
+  \label{eq:error_bound}
+\end{equation}
+where $C$ is independent of $\Delta t$ and the network parameters
+$(\xi, \rho)$.
+\end{remark}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Deep BSDE Solver}
+\label{sec:solver}
+
+\subsection{Time discretisation}
+
+Let $0 = t_0 < t_1 < \cdots < t_N = T_C$ be a uniform grid with step
+$\Delta t = T_C / N$. The Euler--Maruyama scheme for the forward component is
+\begin{equation}
+  X_{n+1} = X_n + \mu(t_n, X_n)\Delta t + \sigma(t_n)\,\Delta W_n,
+  \qquad X_0 = 0,
+  \label{eq:euler_forward}
+\end{equation}
+where $\Delta W_n = W_{t_{n+1}} - W_{t_n} \sim \mathcal{N}(0, \Delta t\, I_3)$.
+The backward Euler scheme is
+\begin{equation}
+  \widehat{V}^{\,\xi,\rho}_{n+1} = \widehat{V}^{\,\xi,\rho}_n
+    + r(t_n, X_n)\,\widehat{V}^{\,\xi,\rho}_n \Delta t
+    + (Z^\rho_n)^\top \Delta W_n,
+  \qquad \widehat{V}^{\,\xi,\rho}_0 = \xi.
+  \label{eq:euler_backward}
+\end{equation}
+The key observation is that the $+r\,V\,\Delta t$ sign in \eqref{eq:euler_backward}
+follows from $-h\,\Delta t = +r\,V\,\Delta t$ (the BSDE driver is $h = -rV$).
+
+\subsection{Neural network parametrisation}
+
+Following \cite{HJE2018}, the control $Z^\rho_n \approx \widehat{Z}_{t_n}$ is
+parametrised by a feedforward network. We use a \emph{shared-weight} architecture:
+a single MLP $\varphi^\rho: \R^5 \to \R^3$ with input $(t_n, X_n) \in \R^5$
+is evaluated at each time step, rather than training a distinct network per step.
+This is more parsimonious than the original Han et al.\ formulation and is
+appropriate here because $\widehat{Z}(t, x)$ is a smooth function of $t$ under
+the Cheyette dynamics, so a shared architecture captures the time dependence
+without per-step expressivity.
+
+The network has three hidden layers of width $32$ (i.e.\ $d + 28$, where
+$d = 4$ is the state dimension), batch normalisation between layers, and
+$\tanh$ activations. The output layer maps to $\R^3$. The full parameter
+count is $\mathcal{O}(5 \cdot 32 + 32^2 \cdot 2 + 32 \cdot 3) \approx 2\,300$
+weights.
+
+The choice of $\tanh$ over ReLU is deliberate: the caplet price function is
+smooth away from the exercise boundary, and piecewise-linear activations
+impose artificial kinks that slow convergence toward the tight target.
+Batch normalisation is critical for stable training, as noted in \cite{HJE2018}.
+
+\subsection{Optimisation}
+
+The parameters $(\xi, \rho)$ — comprising the scalar initial value $\xi \in \R$
+and the network weights $\rho$ — are optimised jointly by minimising the
+empirical terminal loss over $L$ Monte Carlo paths:
+\begin{equation}
+  \mathcal{L}(\xi, \rho) = \frac{1}{L}\sum_{\ell=1}^{L}
+    \bigl(\phi(X^{(\ell)}_{T_C}) - \widehat{V}^{\,\xi,\rho,(\ell)}_{N}\bigr)^2.
+  \label{eq:loss}
+\end{equation}
+We use Adam with a three-phase learning rate schedule:
+\begin{equation}
+  \eta =
+  \begin{cases}
+    5 \times 10^{-3} & \text{iterations } 1\text{--}5{,}000, \\
+    5 \times 10^{-4} & \text{iterations } 5{,}001\text{--}10{,}000, \\
+    5 \times 10^{-5} & \text{iterations } 10{,}001\text{--}20{,}000.
+  \end{cases}
+  \label{eq:lr}
+\end{equation}
+The final phase at $\eta = 5 \times 10^{-5}$ is the critical addition over
+the two-phase schedule of \cite{HJE2018}; it provides the fine-grained descent
+needed for the last decimal place of accuracy.
+
+Hyperparameters are summarised in Table~\ref{tab:hypers}.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Parameter & Value & Rationale \\
+\midrule
+Time steps $N$ & $50 \cdot T_C$ & Euler strong error $\sim \Delta t^{1/2}$; 50 steps/year budgets $\sim$1\% per-step error \\
+Training paths $L$ & $4{,}096$ & $4\times$ the Han et al.\ baseline for lower MC variance \\
+Batch size $B$ & $256$ & Larger batches reduce gradient noise \\
+Iterations $\mathcal{I}$ & $20{,}000$ & Three-phase LR; diminishing returns past $10^4$ \\
+Hidden layers & $3$ & One additional layer beyond \cite{HJE2018} for tighter target \\
+Width & $32$ & Balanced capacity vs.\ over-parameterisation \\
+Activation & $\tanh$ & Smooth pricing function; ReLU too coarse \\
+Precision & \texttt{float64} & Tolerance is $\sim$4 significant figures below price level \\
+\bottomrule
+\end{tabular}
+\caption{Solver hyperparameters for the $0.1$ bps vega-adjusted target.}
+\label{tab:hypers}
+\end{table}
+
+\subsection{Variance reduction}
+
+\paragraph{Antithetic sampling.}
+For each batch, $L/2$ independent Gaussian increments $\{Z_n^{(\ell)}\}_{\ell=1}^{L/2}$
+are drawn and paired with their negatives $\{-Z_n^{(\ell)}\}$. This halves
+the estimator variance with no additional network evaluations.
+
+\paragraph{Warm-start initialisation.}
+Remark~4.1 of \cite{GPR2022} establishes that the error in $V_0$ is
+bottlenecked by $\xi$, decoupled from $\rho$: the network controls the
+hedging accuracy but $\xi$ alone sets the initial price estimate. It is
+therefore natural to initialise $\xi$ near the true price.
+
+A tempting but \emph{invalid} warm-start is to use the analytical Cheyette
+integrated variance $v^2(0, T_C, T_B)$ in a Black formula, since the
+Cheyette caplet formula is precisely Black with that $v$. This would
+initialise $\xi$ at the analytical price to machine precision, making the
+BSDE solver redundant.
+
+The correct approach is an \emph{honest} warm-start: the standard textbook
+Black caplet on LIBOR with a flat $1\%$ vol prior,
+\begin{equation}
+  \xi_0 = e^{-f_0 T_B} \Delta
+    \bigl[F \cdot \Phi(d_1) - K \cdot \Phi(d_2)\bigr], \qquad
+  d_{1,2} = \frac{\ln(F/K) \pm \tfrac{1}{2}\sigma_0^2 T_C}{\sigma_0\sqrt{T_C}},
+  \label{eq:warmstart}
+\end{equation}
+with $\sigma_0 = 0.01$ and $F = \Delta^{-1}(e^{f_0\Delta} - 1)$ the forward
+LIBOR rate. For the 2Y ATM caplet under calibrated Cheyette parameters this
+gives $\xi_0 \approx 3.1 \times 10^{-4}$, roughly $89\%$ below the true
+price of $2.79 \times 10^{-3}$. The solver must close this gap.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Accuracy Target and Error Metric}
+\label{sec:accuracy}
+
+\subsection{Vega-adjusted error}
+
+Raw price errors are not a meaningful accuracy metric across expiries and
+strikes because the price level varies by an order of magnitude across the
+grid. The natural unit is the implied-vol error, obtained by dividing the
+price error by the caplet's Black vega:
+\begin{equation}
+  \varepsilon_{\nu} = \frac{\widehat{V}_0 - V_0^{\mathrm{analytical}}}{\nu},
+  \qquad
+  \nu = B(0, T_C)\,\phi(d_1)\sqrt{T_C},
+  \label{eq:vegaerr}
+\end{equation}
+where $\phi$ is the standard normal density and $d_1$ is evaluated at the
+analytical implied vol. The target is $|\varepsilon_\nu| < 10^{-5}$
+(= $0.1$ basis points).
+
+\subsection{Budget across the grid}
+
+Table~\ref{tab:budget} translates the $0.1$ bps target into absolute price
+tolerances for the test grid. The raw tolerance of $\mathcal{O}(10^{-6})$
+across all expiries sits approximately four decimal places below the price
+level, which is roughly \emph{two orders of magnitude tighter} than the
+benchmark errors reported in \cite{HJE2018} for comparable European payoffs.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{cccccc}
+\toprule
+$T_C$ (Y) & Price & IV & Vega & $|\varepsilon_\nu| < 0.1$ bps $\Rightarrow$ & $|\Delta V| <$ \\
+\midrule
+1 & $2.07 \times 10^{-3}$ & $0.72\%$ & $3.79 \times 10^{-1}$ & & $3.79 \times 10^{-6}$ \\
+2 & $2.79 \times 10^{-3}$ & $1.04\%$ & $5.10 \times 10^{-1}$ & & $5.10 \times 10^{-6}$ \\
+3 & $3.29 \times 10^{-3}$ & $1.30\%$ & $5.95 \times 10^{-1}$ & & $5.95 \times 10^{-6}$ \\
+5 & $3.99 \times 10^{-3}$ & $1.76\%$ & $6.94 \times 10^{-1}$ & & $6.94 \times 10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\caption{ATM caplet reference values (6M tenor, flat curve $f_0 = 5\%$,
+calibrated Cheyette parameters) and absolute price tolerances implied by the
+$0.1$ bps vega-adjusted target.}
+\label{tab:budget}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Analytical Benchmark}
+\label{sec:analytical}
+
+The closed-form caplet price in the Cheyette model \cite{BCK2012} is
+\begin{equation}
+  V_0 = B(0, T_C)\Phi(d_1) - B(0, T_B)(1 + K\Delta)\Phi(d_2),
+  \label{eq:analytical}
+\end{equation}
+with
+\begin{equation}
+  d_{1,2} = \frac{\ln\!\bigl[B(0,T_C) / B(0,T_B)(1+K\Delta)\bigr]
+                  \pm \tfrac{1}{2}\,v^2}{v},
+\end{equation}
+where $v^2 \equiv v^2(0, T_C, T_B)$ is the model-implied integrated variance
+computed from the three-factor volatility structure via explicit quadratures
+over the $G$ functions (equations U1--U3 of \cite{BCK2012}).
+
+Two consequences follow. First, the closed-form price provides an exact
+benchmark for the deep BSDE output, enabling the tight error metric of
+\eqref{eq:vegaerr}. Second — and critically for the initialisation strategy
+— the formula \eqref{eq:analytical} is \emph{identical} to the Black formula
+with $v$ set to the Cheyette integrated vol. Any warm-start that uses
+$v^2(0, T_C, T_B)$ to initialise $\xi$ therefore recovers the analytical
+price directly, bypassing the solver entirely.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Error Analysis Grid}
+\label{sec:grid}
+
+The solver is tested on a $4 \times 3$ grid of expiry--moneyness pairs:
+$T_C \in \{1, 2, 3, 5\}$ years with 6M tenor, and moneyness
+$m = K / K_{\mathrm{ATM}} \in \{0.7, 1.0, 1.3\}$. The deep ITM and OTM cells
+probe the failure mode that most concerns us: the network must learn near-zero
+output (deep OTM) or nearly intrinsic output (deep ITM) through smooth
+interpolation away from the payoff kink at $R = K$.
+
+For each cell, the solver is trained independently from the honest warm-start
+\eqref{eq:warmstart}. The vega-adjusted error \eqref{eq:vegaerr} is reported
+against the closed-form benchmark \eqref{eq:analytical}. The pass criterion
+is $|\varepsilon_\nu| < 10^{-5}$ uniformly across the grid.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Extensions and Limitations}
+\label{sec:extensions}
+
+\paragraph{Control variate.}
+If the $0.1$ bps target is not achieved uniformly, a natural improvement is
+to subtract the bond price $B(T_C, T_B; X_{T_C})$ from the terminal payoff
+and add back its known analytical expectation. The bond price has a closed
+form under the Cheyette model, so the control variate is exact. The residual
+payoff $\phi - B$ is zero at-the-money by construction, reducing the
+effective variance of \eqref{eq:loss} by a factor of $2$--$4$.
+
+\paragraph{Quasi-Monte Carlo.}
+Replacing the pseudo-random Brownian increments with a scrambled Sobol
+sequence in $\R^{3N}$ (one dimension per Brownian per timestep) reduces the
+MC variance at rate $\mathcal{O}((\log L)^{3N}/L)$ vs $\mathcal{O}(L^{-1/2})$.
+For $N = 100$ and $d = 3$ the effective dimension is $300$, at which point QMC
+gains are modest unless effective dimension reduction (e.g.\ Brownian bridge
+construction) is applied.
+
+\paragraph{Bermudan swaptions and xVA.}
+The caplet FBSDE studied here is the simplest non-trivial case. The same
+architecture extends to Bermudan swaptions by adding an early-exercise
+constraint in the backward propagation (cf.\ \cite{GPR2022} for the
+primal-dual approach). For xVA computations, the clean caplet price
+trajectory produced by the trained solver feeds directly into the outer
+CVA/DVA integral via Algorithm~2 of \cite{GPR2022}, or into the recursive
+FVA BSDE via Algorithm~3.
+
+\paragraph{Limitations.}
+The Euler--Maruyama scheme introduces a strong error of order
+$\mathcal{O}(\Delta t^{1/2})$. With $N = 50\, T_C$ steps, this error is
+approximately $1\%$ of the state standard deviation per step, subdominant to
+the target accuracy. Increasing $N$ beyond $100$ per year gives diminishing
+returns as the MC variance in the terminal loss begins to dominate. For longer
+expiries ($T_C > 5$Y), a Milstein scheme or exact simulation of the Gaussian
+marginals would be preferable.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section*{References}
+
+\begin{thebibliography}{9}
+
+\bibitem{BCK2012}
+Beyna, I., Chiarella, C., \& Kang, B.\ (2012).
+Pricing interest rate derivatives in a multifactor HJM model with time
+dependent volatility.
+\textit{SSRN Working Paper} 2162748.
+
+\bibitem{HJE2018}
+Han, J., Jentzen, A., \& E, W.\ (2018).
+Solving high-dimensional partial differential equations using deep learning.
+\textit{Proceedings of the National Academy of Sciences},
+115(34), 8505--8510.
+
+\bibitem{HL2020}
+Han, J., \& Long, J.\ (2020).
+Convergence of the deep BSDE method for coupled FBSDEs.
+\textit{Probability, Uncertainty and Quantitative Risk}, 5(1), 1--33.
+
+\bibitem{GPR2022}
+Gnoatto, A., Picarelli, A., \& Reisinger, C.\ (2022).
+Deep xVA solver --- a neural network based counterparty credit risk management
+framework.
+\textit{arXiv:2005.02633v4}.
+
+\end{thebibliography}
+
+\end{document}
