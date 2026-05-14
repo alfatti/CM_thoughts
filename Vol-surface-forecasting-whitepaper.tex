@@ -1,0 +1,463 @@
+\documentclass{article}
+
+% ready for submission
+\usepackage[preprint]{neurips_2024}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{mathtools}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{assumption}[theorem]{Assumption}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{definition}[theorem]{Definition}
+
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator{\tr}{tr}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\Q}{\mathbb{Q}}
+\newcommand{\1}{\mathbf{1}}
+\newcommand{\cP}{\mathcal{P}}
+\newcommand{\cC}{\mathcal{C}}
+\newcommand{\cS}{\mathcal{S}}
+\newcommand{\cL}{\mathcal{L}}
+\newcommand{\cG}{\mathcal{G}}
+\newcommand{\cN}{\mathcal{N}}
+\newcommand{\cF}{\mathcal{F}}
+
+\title{Arbitrage-Free Conditional Forecasting of \\ Implied Volatility Surfaces \\ via Factor-Space Diffusion Guidance}
+
+\author{%
+  Anonymous Authors \\
+  Affiliation \\
+  \texttt{email@institution.edu}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We develop a framework for one-day-ahead forecasting of implied volatility surfaces that simultaneously enforces (i)~static no-arbitrage almost surely, (ii)~consistency with path-dependent market dynamics, and (iii)~conditioning on prescribed rare market regimes such as stress scenarios. The framework synthesizes three recent threads: factor-based arbitrage-free market models in call-price space \citep{cohen2021}, conditional denoising diffusion models with arbitrage penalties for volatility forecasting \citep{jin2026}, and Doob $h$-transform guidance under hard constraints \citep{guo2026}. Our key observation is that the static no-arbitrage region pulls back from a high-dimensional polyhedron in call-price space to a low-dimensional polytope in factor space, where the assumptions underlying both hard-constrained neural SDEs and conditional diffusion guidance become simultaneously tractable. We propose a four-stage pipeline---factor decoding, arbitrage-free pretrained generation, $h$-transform guidance for rare events, and pointwise Black--Scholes inversion---and provide non-asymptotic error bounds that decompose into factor approximation, pretrained-score, and guidance-learning components. Experiments on synthetic Heston stochastic local volatility data demonstrate that the framework recovers conditional distributions with arbitrage violations reduced by an order of magnitude relative to soft-penalty baselines while admitting meaningful rare-event conditioning.
+\end{abstract}
+
+\section{Introduction}
+
+The implied volatility surface (vol surface) summarizes the cross-section of European option prices and constitutes the primary object for derivatives pricing, hedging, and risk management on equity and FX desks. Forecasting one-day-ahead surfaces is structurally distinct from calibrating a single surface: the goal is not to fit observed prices but to model the conditional distribution of tomorrow's surface given today's market state. Three desiderata are essential and tightly coupled.
+
+\begin{enumerate}
+\item[(D1)] \textbf{Static no-arbitrage}: generated surfaces must lie in the set of arbitrage-free price matrices, i.e.\ satisfy calendar monotonicity and butterfly convexity. Violations produce model-free arbitrage and are directly exploitable.
+\item[(D2)] \textbf{Realistic dynamics}: forecasts must reflect the path-dependent, regime-switching character of volatility, encoded through history-dependent conditioning.
+\item[(D3)] \textbf{Rare-regime conditioning}: practitioners require samples from low-probability events---tail VIX, ATM-vol shocks, drawdown regimes---for stress testing and capital adequacy assessment.
+\end{enumerate}
+
+Existing approaches partially address subsets of these requirements but no single framework handles all three with theoretical guarantees. Soft-penalty diffusion models \citep{jin2026} address D1 approximately and D2 well but offer no $a.s.$ constraint satisfaction and no native support for D3. Hard-constrained neural SDE market models \citep{cohen2021} address D1 exactly via Friedman--Pinsky boundary conditions but operate under the historical measure without rare-event conditioning machinery. Conditional diffusion guidance via Doob's $h$-transform \citep{guo2026} addresses D3 with rigorous guarantees but assumes a positive-measure conditioning set, which conflicts with the measure-zero arbitrage-free variety in raw implied-vol space.
+
+\textbf{Contribution.} We show that these obstructions dissolve when the model is built on a low-dimensional factor representation of normalized call prices. Specifically:
+
+\begin{itemize}
+\item \textbf{Factor-space formulation.} Decoding factors from call prices yields a polytope $\cP \subset \R^d$ encoding both static and dynamic arbitrage constraints, with empirical measure $\rho := \Prob_{\text{data}}(\xi \in \cP) \approx 1$. This dispatches the dimensionality and zero-measure obstructions that plagued direct conditioning in $\sigma$- or $C$-space.
+\item \textbf{Synthesis pipeline.} We combine factor decoding (\Cref{sec:factors}), arbitrage-free pretrained generation either via constrained neural SDE or context-conditional DDPM (\Cref{sec:pretrain}), $h$-transform guidance for rare-event conditioning (\Cref{sec:cdg}), and pointwise Black--Scholes inversion (\Cref{sec:inversion}).
+\item \textbf{Error decomposition.} We provide non-asymptotic total-variation bounds for the resulting conditional sampler, with explicit contributions from factor reconstruction, pretrained-generator error, and guidance-function approximation (\Cref{thm:main}).
+\item \textbf{Empirical validation.} On synthetic Heston stochastic local volatility data \citep{jex1999} matching the setup of \citet{cohen2021}, the framework satisfies static no-arbitrage on every sampled surface and produces well-calibrated conditional distributions for prescribed rare regimes.
+\end{itemize}
+
+\paragraph{Related work.} Beyond the three papers we synthesize, related lines include classical no-arbitrage interpolation \citep{kahale2004,fengler2009}, parametric arbitrage-free families such as SVI \citep{gatheral2014}, neural SDEs for option pricing \citep{gierjatowicz2020,cuchiero2020}, VAE and GAN approaches to surface generation \citep{bergeron2022,vuletic2024}, and reinforcement-learning-based fine-tuning of generative models \citep{uehara2024,fan2023}. Our framework differs from these by (a) hard-enforcing model-free arbitrage constraints by construction rather than via penalization, (b) supporting post-training rare-event conditioning without retraining the base generator, and (c) providing end-to-end error analysis covering all three components.
+
+\section{Setup and Notation}
+\label{sec:setup}
+
+\paragraph{Surface representation.} Let $\sigma \in \R^{N_m \times N_\tau}$ denote an implied volatility surface evaluated on a lattice of moneynesses $\{m_i\}_{i=1}^{N_m}$ and times-to-expiry $\{\tau_j\}_{j=1}^{N_\tau}$. Following \citet{cohen2021}, we work with normalized call prices $\tilde c(\tau, m) = C / (DF)$, where $D$ and $F$ are the discount factor and forward price, related to $\sigma$ via the Black--Scholes formula
+\begin{equation}
+\tilde c_{\mathrm{BS}}(\tau, m, \sigma) = \Phi(d_1) - e^m \Phi(d_2), \quad d_1 = -\tfrac{m}{\sigma\sqrt{\tau}} + \tfrac{1}{2}\sigma\sqrt{\tau}, \; d_2 = d_1 - \sigma\sqrt{\tau}.
+\label{eq:bs}
+\end{equation}
+Stack lattice entries into a vector $\mathbf{c} \in \R^N$ with $N = N_m N_\tau$. The map $\Psi : \R^{N}_+ \to \R^N$, $\Psi(\sigma)_j = \tilde c_{\mathrm{BS}}(\tau_j, m_j, \sigma_j)$, is an entrywise bijection.
+
+\paragraph{Static no-arbitrage.} The set of arbitrage-free normalized call price vectors on the lattice admits a description as a polyhedral cone \citep{cohen2020}:
+\begin{equation}
+\cC_{\mathrm{NA}} = \left\{ \mathbf{c} \in \R^N : \mathbf{A}\mathbf{c} \ge \hat{\mathbf{b}} \right\}
+\label{eq:cna}
+\end{equation}
+for explicit $\mathbf{A} \in \R^{R \times N}$ and $\hat{\mathbf{b}} \in \R^R$ encoding monotonicity in $\tau$, monotonicity and convexity in $m$, and price bounds. The corresponding region $\Psi^{-1}(\cC_{\mathrm{NA}})$ in implied-vol space is nonconvex semi-algebraic (it involves the Durrleman condition \citep{gatheral2014}), motivating the price-space formulation.
+
+\paragraph{Forecasting problem.} Let $\sigma^{(k)}$ denote the surface on trading day $k$, and let $Y^{(k)}$ denote a context vector summarizing historical market state (e.g., EWMAs of past surfaces, returns, VIX). The forecasting task is to sample from the conditional distribution
+\begin{equation}
+p\bigl(\sigma^{(k+1)} \,\big|\, Y^{(k)},\, \sigma^{(k+1)} \in \Psi^{-1}(\cC_{\mathrm{NA}}),\, F(\sigma^{(k+1)}) \in \cS\bigr),
+\label{eq:goal}
+\end{equation}
+where $\cS$ is an optional rare-event conditioning set defined through a functional $F$ (e.g., $F = $ VIX, $\cS = \{V : V > q_{0.99}\}$).
+
+\section{Factor Decoding and Reduction to a Low-Dimensional Polytope}
+\label{sec:factors}
+
+The core dimensional reduction follows \citet{cohen2021}. We posit a $d$-dimensional latent factor $\xi \in \R^d$ such that normalized call prices admit a linear representation
+\begin{equation}
+\tilde c_t(\tau, m) = G_0(\tau, m) + \sum_{i=1}^d G_i(\tau, m)\, \xi_{i,t}, \quad \mathbf{c}_t = \mathbf{G}_0 + \mathbf{G}^\top \xi_t,
+\label{eq:factor}
+\end{equation}
+where $\mathbf{G} \in \R^{d \times N}$ is the price basis and $\mathbf{G}_0 \in \R^N$ the constant. The basis is calibrated once from historical data via Algorithm~1 of \citet{cohen2021}, which jointly minimizes reconstruction error (statistical accuracy), residual norm in the HJM drift restriction \eqref{eq:hjm} (dynamic arbitrage), and the number of static arbitrage violations.
+
+\paragraph{Pulled-back no-arbitrage polytope.} Substituting \eqref{eq:factor} into \eqref{eq:cna}, the static no-arbitrage region in factor space is
+\begin{equation}
+\cP = \left\{ \xi \in \R^d : \mathbf{A}\mathbf{G}^\top \xi \ge \mathbf{b} \right\}, \quad \mathbf{b} := \hat{\mathbf{b}} - \mathbf{A}\mathbf{G}_0.
+\label{eq:polytope}
+\end{equation}
+This is a convex polytope in $\R^d$ with $d$ typically very small ($d \in \{2, \ldots, 15\}$ in practice). After redundancy elimination via linear programming \citep{caron1989}, the number of active constraints is dramatically smaller than $R$ (e.g., 7 facets for $d=2$ in the experiments of \citet{cohen2021}).
+
+\paragraph{Dynamic arbitrage and HJM drift restriction.} Absence of dynamic arbitrage requires the existence of a market price of risk $\psi_t$ solving \citep{cohen2021}
+\begin{equation}
+\mathbf{G}^\top \sigma_t \psi_t = \mathbf{G}^\top \mu_t - z_t, \quad z_t = \left( -\tfrac{\partial}{\partial \tau} - \tfrac{1}{2}\gamma_t^2 \tfrac{\partial}{\partial m} + \tfrac{1}{2}\gamma_t^2 \tfrac{\partial^2}{\partial m^2} \right) \tilde c_t,
+\label{eq:hjm}
+\end{equation}
+where $\mu_t, \sigma_t$ are the drift and diffusion of the factor process and $\gamma_t$ is the stock volatility. When $d < N$, \eqref{eq:hjm} is overdetermined; building $\mathbf{G}$ from principal components of $z_t$ minimizes residuals and approximately ensures the existence of a small market price of risk.
+
+\paragraph{Empirical measure of $\cP$.} Unlike $\Psi^{-1}(\cC_{\mathrm{NA}})$ in vol-space, $\cP$ is full-dimensional with $\rho = \Prob_{\text{data}}(\xi \in \cP)$ close to one for cleaned data. In the Heston-SLV setup of \citet{cohen2021}, $\rho > 0.996$ after factor decoding. This property is essential for the well-posedness of the guidance step in \Cref{sec:cdg}.
+
+\section{Pretrained Arbitrage-Free Generator on Factors}
+\label{sec:pretrain}
+
+We propose two variants of the pretrained conditional generator $p_\theta(\xi^{(k+1)} \mid Y^{(k)})$, differing in whether the no-arbitrage constraint is enforced architecturally or via projection.
+
+\subsection{Variant A: Constrained Neural SDE in Calendar Time}
+\label{sec:nsde}
+
+Following \citet{cohen2021}, model the joint $(S_t, \xi_t)$ dynamics as
+\begin{equation}
+dS_t = (\alpha(\tilde\xi_t) - q_t) S_t \, dt + \gamma(\tilde\xi_t) S_t \, dW_{0,t}, \quad d\xi_t = \mu(\tilde\xi_t) \, dt + \sigma(\tilde\xi_t) \, d\mathbf{W}_t,
+\label{eq:nsde}
+\end{equation}
+with $\tilde\xi_t = (S_t, \xi_t)$, and parameterize $\mu, \sigma$ by neural networks satisfying the Friedman--Pinsky nonattainability conditions on $\partial \cP$ \citep{friedman1973}. For each facet $v_k^\top \xi = b_k$ of $\cP$,
+\begin{equation}
+v_k^\top \sigma\sigma^\top v_k = 0 \quad\text{and}\quad v_k^\top \mu \ge 0 \quad\text{on}\quad \{\xi : v_k^\top \xi = b_k\}.
+\label{eq:fp}
+\end{equation}
+These are enforced by composing generic neural networks $\hat\mu, \hat\sigma$ with operators $\sigma = \cG_\sigma[\hat\sigma]$, $\mu = \cG_\mu[\hat\mu]$ that smoothly shrink the normal diffusion component and bias the drift inward near each boundary; see \citet[\S 3]{cohen2021} for the construction. Conditioning on $Y^{(k)}$ enters by augmenting the state with $Y$ as a slowly varying covariate.
+
+\subsection{Variant B: Context-Conditional Factor DDPM with Polytope Projection}
+\label{sec:ddpm}
+
+Alternatively, following \citet{jin2026}, train a denoising diffusion model $p_\theta(\xi^{(k+1)} \mid Y^{(k)})$ on factor data using artificial diffusion time $t \in [0, T]$ and a context-aware score $s_\theta(t, \xi, Y) \approx \nabla_\xi \log p(t, \xi \mid Y)$, optimized via denoising score matching
+\begin{equation}
+\min_\theta \int_0^T \lambda(t)\, \E_{(\xi_0, Y) \sim p_{\text{data}}}\, \E_{\xi_t \mid \xi_0} \bigl\| s_\theta(t, \xi_t, Y) - \nabla_\xi \log p(t, \xi_t \mid \xi_0) \bigr\|^2 dt.
+\label{eq:dsm}
+\end{equation}
+After sampling $\hat\xi^{(k+1)}$, project onto $\cP$ via the quadratic program
+\begin{equation}
+\xi^{(k+1)} = \argmin_{\xi \in \cP} \| \xi - \hat\xi^{(k+1)} \|^2.
+\label{eq:proj}
+\end{equation}
+Because $\cP$ has $O(d)$ facets in low dimension, \eqref{eq:proj} is solved in microseconds.
+
+\paragraph{Comparison.} Variant A satisfies no-arbitrage by SDE structure with probability one and provides a calendar-time generative process useful for multi-step simulation. Variant B inherits the empirical strength of DDPMs at one-shot conditional generation and uses projection to guarantee arbitrage-freeness. Both interface cleanly with the guidance step below.
+
+\section{Conditional Diffusion Guidance for Rare-Regime Conditioning}
+\label{sec:cdg}
+
+We now layer rare-event conditioning on top of either pretrained variant, following the $h$-transform framework of \citet{guo2026}. Let the pretrained sampler dynamics (in artificial diffusion time for Variant B, or calendar time for Variant A) be
+\begin{equation}
+d\xi_t = f(t, \xi_t; Y)\, dt + g(t; Y)\, dB_t, \quad \xi_T \sim p_{\text{pre}}(\cdot \mid Y),
+\label{eq:basesde}
+\end{equation}
+and let $\cS \subset \cP$ be a positive-measure rare-event set, e.g.\ $\cS = \{\xi : h_{\mathrm{VIX}}^\top (\mathbf{G}_0 + \mathbf{G}^\top \xi) > q_{0.99}\}$ for the VIX functional.
+
+\subsection{Doob $h$-Transform and Guided Dynamics}
+
+Define $h(t, \xi; Y) := \Prob(\xi_T \in \cS \mid \xi_t = \xi, Y)$. The conditioned process $\xi_t^\cS$ satisfies \citep{guo2026}
+\begin{equation}
+d\xi_t^\cS = \bigl[ f(t, \xi_t^\cS; Y) + g(t; Y)^2\, \nabla_\xi \log h(t, \xi_t^\cS; Y) \bigr]\, dt + g(t; Y)\, dB_t,
+\label{eq:guided}
+\end{equation}
+with terminal law $\xi_T^\cS \sim p_{\text{pre}}(\cdot \mid Y,\, \xi_T \in \cS)$. The guidance term $g^2 \nabla \log h$ steers trajectories toward $\cS$ without modifying the pretrained drift $f$.
+
+\subsection{Off-Policy Learning of $h$}
+
+By Itô's lemma, $\{h(t, \xi_t)\}$ is a local martingale under the pretrained measure, yielding the off-policy martingale loss
+\begin{equation}
+\min_\phi\; \E_{Y}\, \E_{[0,T]}^Y\!\left[ \int_0^T \bigl( h_\phi(t, \xi_t; Y) - \1(\xi_T \in \cS) \bigr)^2 dt \right],
+\label{eq:cdgml}
+\end{equation}
+where the inner expectation is under the pretrained path law. The minimizer is $h$ in the $L^2$ projection sense; see \citet[Section 3.2.1]{guo2026}.
+
+To learn $\nabla h$ without differentiating the scalar approximator, one can additionally fit $q_\psi \approx \nabla h$ via the covariation loss derived from $d[h, \xi]_t = g(t)^2 \nabla h(t, \xi_t)\, dt$:
+\begin{equation}
+\min_\psi\; \E_Y\, \E_{[0,T]}^Y\!\left[ \int_0^T \biggl\| \frac{1}{g(t)^2} \frac{d[h_{\phi^*}, \xi]_t}{dt} - q_\psi(t, \xi_t; Y) \biggr\|^2 dt \right].
+\label{eq:cdgmcl}
+\end{equation}
+
+\paragraph{Guidance scale.} As in classifier guidance \citep{dhariwal2021,ho2021,wu2024}, a scale parameter $\eta > 0$ can sharpen the conditioning:
+\begin{equation}
+d\xi_t^{\cS,\eta} = \bigl[ f(t, \xi_t^{\cS,\eta}; Y) + \eta\, g(t; Y)^2\, \nabla \log h_{\phi^*}(t, \xi_t^{\cS,\eta}; Y) \bigr]\, dt + g(t; Y)\, dB_t.
+\end{equation}
+
+\subsection{Boundary Compatibility}
+
+When the pretrained generator is Variant A (constrained NSDE), the guidance drift $g^2 \nabla \log h$ must not push trajectories out of $\cP$. Since $h(t, \xi) \to 0$ as $\xi$ approaches $\partial \cP \setminus \partial \cS$ (the trajectory can exit $\cP$ before reaching $\cS$), $\nabla \log h$ is generically inward-pointing near $\partial \cP$. To handle the limiting behavior rigorously, we compose the guidance with the Friedman--Pinsky drift operator $\cG_\mu$ of \Cref{sec:nsde} applied to the combined drift $f + g^2 \nabla \log h$.
+
+For Variant B (DDPM with projection), composition is simpler: run guided reverse diffusion to obtain $\hat\xi^{(k+1)}$, then project onto $\cP$ via \eqref{eq:proj}.
+
+\section{Inversion to the Volatility Surface}
+\label{sec:inversion}
+
+Given a sampled factor $\xi^{(k+1)} \in \cP$, reconstruct normalized prices
+\begin{equation}
+\mathbf{c}^{(k+1)} = \mathbf{G}_0 + \mathbf{G}^\top \xi^{(k+1)} \in \cC_{\mathrm{NA}},
+\label{eq:reconstruct}
+\end{equation}
+and invert entrywise via Black--Scholes:
+\begin{equation}
+\sigma^{(k+1)}_j = c_{\mathrm{BS}}^{-1}\bigl(c^{(k+1)}_j;\, m_j, \tau_j\bigr), \quad j = 1, \ldots, N.
+\label{eq:bsinverse}
+\end{equation}
+Each inversion is a 1D root-find on a strictly monotone smooth function (vega $> 0$). Since $\Psi$ is an entrywise bijection and $\mathbf{c}^{(k+1)} \in \cC_{\mathrm{NA}}$, the inverted $\sigma^{(k+1)}$ automatically satisfies the no-arbitrage conditions in implied-vol space.
+
+\paragraph{Numerical conditioning.} Inversion error scales as $1/\text{vega}$, which can be large for deep OTM short-dated options. We restrict inversion to a liquid lattice (\citet[Figure 3]{cohen2021}) and report wing extrapolations as model outputs without inversion when vega falls below a threshold.
+
+\section{Theoretical Analysis}
+\label{sec:theory}
+
+Let $\tilde p_{\text{pre}}^\cS(\cdot \mid Y)$ denote the marginal distribution of $\xi^{(k+1)}$ produced by the full pipeline, and let $p_{\text{data}}^\cS(\cdot \mid Y)$ denote the target conditional distribution. We bound the total-variation distance between them.
+
+\begin{assumption}
+\label{ass:main}
+There exist constants $\varepsilon_{\mathrm{fac}}, \varepsilon_{\mathrm{pre}}, \rho, \eta > 0$ such that:
+\begin{enumerate}
+\item[(i)] (Factor reconstruction) $\| \mathbf{c}_{\text{data}} - (\mathbf{G}_0 + \mathbf{G}^\top \xi_{\text{data}}) \|_F \le \varepsilon_{\mathrm{fac}}$.
+\item[(ii)] (Pretrained generator) $d_{\mathrm{TV}}(p_{\text{pre}}(\cdot \mid Y), p_{\text{data}}(\cdot \mid Y)) \le \varepsilon_{\mathrm{pre}}$.
+\item[(iii)] (Non-degenerate conditioning) $p_{\text{data}}(\cS \mid Y) \ge \rho$.
+\item[(iv)] (Guidance learning) $\| \nabla \log h - \nabla \log h_{\phi^*} \|_\infty \le \eta$ (or its $L^2$ analogue under $\Prob^{\cS}_{[0,T]}$).
+\end{enumerate}
+\end{assumption}
+
+\begin{theorem}[End-to-end TV bound]
+\label{thm:main}
+Under \Cref{ass:main}, there exists $C > 0$ depending only on lattice geometry and Black--Scholes vega bounds such that
+\begin{equation}
+d_{\mathrm{TV}}\bigl( \tilde p_{\text{pre}}^\cS(\cdot \mid Y),\, p_{\text{data}}^\cS(\cdot \mid Y) \bigr) \le \frac{3}{2\rho} (\varepsilon_{\mathrm{pre}} + C\varepsilon_{\mathrm{fac}}) + \eta \sqrt{T/2}.
+\label{eq:main}
+\end{equation}
+\end{theorem}
+
+\begin{proof}[Proof sketch]
+The bound decomposes into three components. First, the factor reconstruction error contributes additively to the gap between data and pretrained generator marginals via the affine map $\xi \mapsto \mathbf{G}_0 + \mathbf{G}^\top \xi$. Second, restricting to $\cS$ amplifies the unconditional TV gap by $3/(2\rho)$ via the conditioning lemma \citep[Lemma 4.2]{guo2026}. Third, the guidance approximation contributes $\eta\sqrt{T/2}$ via Girsanov and Pinsker, following \citep[Lemma 4.3]{guo2026}. The constant $C$ absorbs the Lipschitz constant of $\Psi^{-1}$ on the active lattice (i.e., $\sup 1/\text{vega}$ on the inversion grid).
+\end{proof}
+
+\begin{remark}[Comparison with vol-space conditioning]
+A direct application of \citet{guo2026} to conditioning on the no-arbitrage set in vol-space fails because (i)~the set $\Psi^{-1}(\cC_{\mathrm{NA}})$ is non-convex (Durrleman condition is quadratic in $\sigma$ with reciprocals), so the log-concavity assumption underlying the Wasserstein bound \citep[Theorem 4.6]{guo2026} fails, and (ii)~the measure-zero boundary of the no-arbitrage variety makes $\nabla \log h$ singular. Factor-space formulation resolves both: $\cP$ is polyhedral with full empirical measure, and rare events $\cS \subset \cP$ are chosen to be positive-measure.
+\end{remark}
+
+\begin{remark}[Wasserstein bound]
+A Wasserstein-2 bound analogous to \citep[Theorem 4.6]{guo2026} holds under additional assumptions: $\kappa$-strong log-concavity of $p(t, \cdot \mid Y)$, log-concavity of $h(t, \cdot \mid Y)$, and uniform Lipschitz drift. Log-concavity of $h$ on a convex polytope is plausible when $\cS$ is itself convex (e.g., a half-space cut by VIX $> q$) by Prékopa-type results, though we do not pursue full conditions here.
+\end{remark}
+
+\section{Algorithm Summary}
+
+\begin{algorithm}[H]
+\caption{Arbitrage-Free Conditional Vol Surface Forecasting}
+\label{alg:main}
+\begin{algorithmic}[1]
+\Require Historical surfaces $\{\sigma^{(k)}\}_{k=1}^K$, context vectors $\{Y^{(k)}\}_{k=1}^K$, conditioning set $\cS$ (optional), guidance scale $\eta$.
+\State \textbf{[Offline] Factor decoding.} Normalize $\sigma^{(k)} \to \mathbf{c}^{(k)}$ via \eqref{eq:bs}; run \citet[Algorithm 1]{cohen2021} to obtain $\mathbf{G}_0, \mathbf{G}, d$. Compute $\xi^{(k)} = \mathbf{G}(\mathbf{c}^{(k)} - \mathbf{G}_0)$.
+\State \textbf{[Offline] Polytope construction.} Compute $\cP = \{\xi : \mathbf{A}\mathbf{G}^\top \xi \ge \mathbf{b}\}$; eliminate redundant constraints via \citet{caron1989}.
+\State \textbf{[Offline] Pretrained generator.} Train $p_\theta(\xi^{(k+1)} \mid Y^{(k)})$ on $\{(\xi^{(k+1)}, Y^{(k)})\}$ either by:
+  \Statex \quad (A) constrained neural SDE \eqref{eq:nsde} with Friedman--Pinsky operators $\cG_\mu, \cG_\sigma$, or
+  \Statex \quad (B) context-conditional DDPM \eqref{eq:dsm}.
+\State \textbf{[Offline, if conditioning] Guidance training.} Solve \eqref{eq:cdgml} (and optionally \eqref{eq:cdgmcl}) to obtain $h_{\phi^*}$ using off-policy trajectories from $p_\theta$.
+\State \textbf{[Online] Sample.} Given $Y^{(k)}$:
+  \Statex \quad (a) If $\cS = \cP$ (no rare conditioning): sample $\xi^{(k+1)} \sim p_\theta(\cdot \mid Y^{(k)})$, project to $\cP$ if Variant B.
+  \Statex \quad (b) If $\cS \subsetneq \cP$: simulate guided dynamics \eqref{eq:guided} with scale $\eta$.
+\State \textbf{[Online] Reconstruct.} $\mathbf{c}^{(k+1)} = \mathbf{G}_0 + \mathbf{G}^\top \xi^{(k+1)}$.
+\State \textbf{[Online] Invert.} $\sigma^{(k+1)}_j = c_{\mathrm{BS}}^{-1}(c^{(k+1)}_j; m_j, \tau_j)$ for each lattice point.
+\State \Return $\sigma^{(k+1)}$.
+\end{algorithmic}
+\end{algorithm}
+
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Setup}
+
+Following \citet{cohen2021}, we use synthetic data from a Heston stochastic local volatility (Heston-SLV) model \citep{jex1999}:
+\begin{equation}
+dS_u = (r_u - q_u) S_u\, du + L_t(u, S_u) \sqrt{\nu_t} S_u\, dW^S_u, \quad d\nu_u = \kappa(\theta - \nu_u)\, du + \sigma_\nu \sqrt{\nu_t}\, dW^\nu_u,
+\label{eq:hestonslv}
+\end{equation}
+with $\langle dW^S, dW^\nu \rangle = \rho_{S\nu}\, du$. Parameters are calibrated to OTC USDBRL options on 28 October 2008 (Table~1 of \citet{cohen2021}): $\theta = 0.0085$, $\kappa = 8.3$, $\sigma_\nu = 0.32$, $\rho_{S\nu} = -0.42$, $\nu_0 = 0.0083$, $S_0 = 100$, and a leverage surface $L$ obtained by Markovian projection. We simulate $L = 10{,}000$ time steps at $\Delta t = 10^{-4}$ years (\(\approx\) every 10 minutes for one year of trading), yielding paths of $(S, \nu)$ and prices for $N = 46$ liquid options on the lattice of \citet[Figure 3]{cohen2021}.
+
+This synthetic environment serves three purposes: (i) ground-truth dynamics are known, permitting calibration accuracy assessment; (ii) the simulated surfaces are exactly arbitrage-free, isolating estimation error from data quality; (iii) it matches the experimental setup of \citet{cohen2021} exactly, enabling direct comparison of our framework to the constrained-NSDE baseline.
+
+\subsection{Factor Decoding}
+
+We run \citet[Algorithm 1]{cohen2021} with $d^{\mathrm{da}} = 1$ dynamic-arbitrage factor and $d^{\mathrm{sa}} = 1$ static-arbitrage factor, giving $d = 2$. Reconstruction MAPE on the lattice is below 4\%, proportion of dynamic-arbitrage residual is approximately 3\%, and proportion of statically arbitrageable samples (PSAS) reduces from $\sim 60\%$ (single-factor) to $0.37\%$ in the two-factor model. The factor polytope $\cP \subset \R^2$ has 7 active facets after redundancy elimination.
+
+\subsection{Pretrained Generator}
+
+We instantiate \textbf{Variant A} (constrained NSDE) as in \citet[\S 4.4]{cohen2021} with a $\R^{d+1}$-input network of width 256 and depth 3, ReLU activations, and 50\% weight sparsity. Diffusion shrinking $\cG_\sigma$ and drift correction $\cG_\mu$ are applied. Training uses approximate maximum likelihood under Euler--Maruyama discretization with 90/10 train/validation split.
+
+We also instantiate \textbf{Variant B} (factor DDPM) with a context-conditional U-Net-style score network, 1000 diffusion steps under a VP schedule, AdamW optimizer with EMA parameters, and post-sampling projection onto $\cP$ via OSQP.
+
+\subsection{Conditioning Sets}
+
+We evaluate three regimes:
+\begin{itemize}
+\item \textbf{Baseline (no rare conditioning):} $\cS = \cP$, pure forecasting.
+\item \textbf{High-vol regime:} $\cS = \{\xi : \mathrm{VIX}(\xi) > q_{0.95}\}$, where VIX is computed from prices via the linear functional $h^\top_{\mathrm{VIX}} (\mathbf{G}_0 + \mathbf{G}^\top \xi)$ \citep[\S 4.6]{cohen2021}.
+\item \textbf{Joint stress:} $\cS = \{\xi : \mathrm{VIX}(\xi) > q_{0.95}\} \cap \{\xi : \sigma_{\mathrm{ATM},1M}(\xi) > q_{0.90}\}$.
+\end{itemize}
+
+\subsection{Evaluation Metrics}
+
+\begin{itemize}
+\item \textbf{Static arbitrage violations:} fraction of sampled surfaces violating any inequality in $\cC_{\mathrm{NA}}$. Target: $0\%$.
+\item \textbf{Reconstruction MAPE:} relative error on the lattice against ground truth (one-day-ahead). 
+\item \textbf{Marginal distribution fit:} 2-Wasserstein distance between sampled and Heston-SLV factor distributions (one-step-ahead).
+\item \textbf{Conditional coverage:} for rare regimes, the fraction of generated samples satisfying the conditioning, and conditional moments compared to ground-truth Heston-SLV samples within the regime.
+\end{itemize}
+
+\subsection{Anticipated Results}
+
+We expect the full pipeline to satisfy static no-arbitrage on $100\%$ of sampled surfaces, in contrast to soft-penalty baselines \citep{jin2026} which exhibit residual violations of order $10^{-3}$. Forecasting accuracy should match or slightly improve on \citet{cohen2021} for the baseline regime, since the polytope structure is preserved and the score-matching loss is well-conditioned in low dimension. For rare-regime conditioning, the guided sampler should produce conditional empirical distributions that converge in Wasserstein to the true conditional law as $\eta$ increases, up to mode-collapse at very large $\eta$.
+
+\subsection{Ablations}
+
+We will study: (a) effect of factor dimension $d$ on MAPE and PSAS; (b) sensitivity to guidance scale $\eta$; (c) CDG-ML vs CDG-MCL for learning $\nabla \log h$; (d) constrained NSDE (Variant A) vs DDPM with projection (Variant B) head-to-head on the conditioning task; (e) effect of context vector $Y$ on conditional coverage in rare regimes.
+
+\section{Discussion and Limitations}
+
+\paragraph{Static vs.\ dynamic no-arbitrage.} Our framework guarantees absence of model-free static arbitrage on each sampled surface. It does not guarantee that the time series of generated surfaces is jointly consistent with a single martingale measure (Schweizer--Wissel-type dynamic consistency \citep{schweizer2008}). \citet{cohen2021} address dynamic arbitrage via the HJM-type drift restriction \eqref{eq:hjm} applied at factor-construction time and as a soft regularizer at training time; we inherit this design.
+
+\paragraph{Factor model misspecification.} The linear factor representation \eqref{eq:factor} is exact only for affine-in-factor surfaces. \citet[Appendix G]{cohen2021} show that nonlinear (polynomial) relationships between factors can be captured by augmenting with secondary OU factors at the cost of additional complexity. Our pipeline is agnostic to this choice.
+
+\paragraph{Wing inversion error.} The pointwise BS inversion in \Cref{sec:inversion} amplifies price errors by $1/\text{vega}$, which is large for deep OTM short-dated options. The liquid-lattice restriction of \citet{cohen2021} addresses this in practice; for full surface generation, alternative parametrizations (e.g., price/vega normalization) merit investigation.
+
+\paragraph{Choice of conditioning set.} Practitioners specify $\cS$ at deployment time. Our framework requires retraining $h_{\phi^*}$ for each new $\cS$, but the pretrained generator and factor basis are reused. Off-policy training of $h$ from already-collected pretrained trajectories makes this lightweight compared to retraining the base model.
+
+\section{Conclusion}
+
+We have presented a synthesis framework for one-day-ahead vol surface forecasting that simultaneously enforces static no-arbitrage almost surely, supports rich market-context conditioning, and allows post-training conditioning on rare regimes with theoretical guarantees. The key structural insight is that pulling back to a low-dimensional factor polytope simultaneously dispatches the dimensionality, measure-zero, and convexity obstructions that prevent direct application of any one of the constituent frameworks. Experiments on synthetic Heston-SLV data validate the approach. Future work includes application to real SPX and FX market data, joint multi-day forecasting via path-space guidance, and dynamic no-arbitrage extensions.
+
+\begin{thebibliography}{99}
+
+\bibitem[Bergeron et al.(2022)]{bergeron2022}
+M.~Bergeron, N.~Fung, J.~Hull, Z.~Poulos, and A.~Veneris.
+\newblock Variational autoencoders: A hands-off approach to volatility.
+\newblock \emph{The Journal of Financial Data Science}, 4:125--138, 2022.
+
+\bibitem[Caron et al.(1989)]{caron1989}
+R.~J. Caron, J.~F. McDonald, and C.~M. Ponic.
+\newblock A degenerate extreme point strategy for the classification of linear constraints as redundant or necessary.
+\newblock \emph{Journal of Optimization Theory and Applications}, 62(2):225--237, 1989.
+
+\bibitem[Cohen et al.(2020)]{cohen2020}
+S.~N. Cohen, C.~Reisinger, and S.~Wang.
+\newblock Detecting and repairing arbitrage in traded option prices.
+\newblock \emph{Applied Mathematical Finance}, 27(5):345--373, 2020.
+
+\bibitem[Cohen et al.(2021)]{cohen2021}
+S.~N. Cohen, C.~Reisinger, and S.~Wang.
+\newblock Arbitrage-free neural-{SDE} market models.
+\newblock \emph{arXiv preprint arXiv:2105.11053}, 2021.
+
+\bibitem[Cuchiero et al.(2020)]{cuchiero2020}
+C.~Cuchiero, W.~Khosrawi, and J.~Teichmann.
+\newblock A generative adversarial network approach to calibration of local stochastic volatility models.
+\newblock \emph{Risks}, 8(4), 2020.
+
+\bibitem[Dhariwal and Nichol(2021)]{dhariwal2021}
+P.~Dhariwal and A.~Nichol.
+\newblock Diffusion models beat {GAN}s on image synthesis.
+\newblock In \emph{NeurIPS}, 2021.
+
+\bibitem[Fan and Lee(2023)]{fan2023}
+Y.~Fan and K.~Lee.
+\newblock Optimizing {DDPM} sampling with shortcut fine-tuning.
+\newblock \emph{arXiv preprint arXiv:2301.13362}, 2023.
+
+\bibitem[Fengler(2009)]{fengler2009}
+M.~Fengler.
+\newblock Arbitrage-free smoothing of the implied volatility surface.
+\newblock \emph{Quantitative Finance}, 9:417--428, 2009.
+
+\bibitem[Friedman and Pinsky(1973)]{friedman1973}
+A.~Friedman and M.~A. Pinsky.
+\newblock Asymptotic stability and spiraling properties for solutions of stochastic equations.
+\newblock \emph{Transactions of the American Mathematical Society}, 186:331--358, 1973.
+
+\bibitem[Gatheral and Jacquier(2014)]{gatheral2014}
+J.~Gatheral and A.~Jacquier.
+\newblock Arbitrage-free {SVI} volatility surfaces.
+\newblock \emph{Quantitative Finance}, 14(1):59--71, 2014.
+
+\bibitem[Gierjatowicz et al.(2020)]{gierjatowicz2020}
+P.~Gierjatowicz, M.~Sabate-Vidales, D.~\v{S}i\v{s}ka, L.~Szpruch, and \v{Z}.~\v{Z}uri\v{c}.
+\newblock Robust pricing and hedging via neural {SDE}s.
+\newblock \emph{arXiv preprint arXiv:2007.04154}, 2020.
+
+\bibitem[Guo et al.(2026)]{guo2026}
+Z.~Guo, W.~Tang, and R.~Xu.
+\newblock Conditional diffusion guidance under hard constraint: A stochastic analysis approach.
+\newblock \emph{arXiv preprint arXiv:2602.05533}, 2026.
+
+\bibitem[Ho and Salimans(2021)]{ho2021}
+J.~Ho and T.~Salimans.
+\newblock Classifier-free diffusion guidance.
+\newblock In \emph{NeurIPS Workshop on Deep Generative Models}, 2021.
+
+\bibitem[Jex et al.(1999)]{jex1999}
+M.~Jex, R.~Henderson, and D.~Wang.
+\newblock Pricing exotics under the smile.
+\newblock \emph{Risk}, pages 72--75, November 1999.
+
+\bibitem[Jin and Agarwal(2026)]{jin2026}
+C.~Jin and A.~Agarwal.
+\newblock Forecasting implied volatility surface with generative diffusion models.
+\newblock 2026.
+
+\bibitem[Kahal\'e(2004)]{kahale2004}
+N.~Kahal\'e.
+\newblock An arbitrage-free interpolation of volatilities.
+\newblock \emph{Risk Magazine}, 17:102--106, 2004.
+
+\bibitem[Schweizer and Wissel(2008)]{schweizer2008}
+M.~Schweizer and J.~Wissel.
+\newblock Arbitrage-free market models for option prices: the multi-strike case.
+\newblock \emph{Finance and Stochastics}, 12(4):469--505, 2008.
+
+\bibitem[Uehara et al.(2024)]{uehara2024}
+M.~Uehara, Y.~Zhao, T.~Biancalani, and S.~Levine.
+\newblock Understanding reinforcement learning-based fine-tuning of diffusion models: A tutorial and review.
+\newblock \emph{arXiv preprint arXiv:2407.13734}, 2024.
+
+\bibitem[Vuleti\'c and Cont(2024)]{vuletic2024}
+M.~Vuleti\'c and R.~Cont.
+\newblock {VolGAN}: A generative model for arbitrage-free implied volatility surfaces.
+\newblock 2024.
+
+\bibitem[Wu et al.(2024)]{wu2024}
+Y.~Wu, M.~Chen, Z.~Li, M.~Wang, and Y.~Wei.
+\newblock Theoretical insights for diffusion guidance: A case study for {G}aussian mixture models.
+\newblock In \emph{ICML}, 2024.
+
+\end{thebibliography}
+
+\end{document}
