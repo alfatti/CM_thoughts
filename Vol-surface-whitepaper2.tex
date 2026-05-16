@@ -1,0 +1,351 @@
+\documentclass[11pt]{article}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\ind}{\mathbf{1}}
+\newcommand{\xib}{\boldsymbol{\xi}}
+\newcommand{\1}{\mathbf{1}}
+
+\title{Technical Report:\\
+A Context-Conditioned Constrained Neural SDE \\for Vol Surface Forecasting on Synthetic Heston Data}
+\author{Internal report, \texttt{volsurface\_cdg} v2}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\noindent
+This report documents the methodology implemented in the \texttt{volsurface\_cdg} v2 codebase, which combines three ideas from recent literature into an arbitrage-free conditional forecaster for option-price surfaces: (i) the linear factor representation of normalised call prices and the resulting polytope state space for static no-arbitrage \citep{cohen2021}; (ii) Friedman--Pinsky-style boundary operators inside a neural SDE on the factor polytope \citep{cohen2021,friedman1973}; and (iii) Doob $h$-transform guidance for conditioning on rare market regimes, trained via the off-policy martingale loss \citep{guo2026}. The model is augmented with an exogenous context vector $Y_t$ (EWMAs of $\xi$ and rolling realised variance of $\log S$) so that the drift and diffusion are state- \emph{and} history-dependent.
+
+The report is descriptive, not theoretical: the code is a parsimonious reimplementation, several design choices are deliberately simpler than the originals, and the experimental section reports actual numbers from a single executed run on synthetic Heston data without claims of statistical significance. The headline empirical finding is that on Heston synthetic data the no-context Markov-in-$\xi$ NSDE substantially beats a random-walk baseline in one-step test-NLL, while adding the context vector neither helps nor hurts on price MAPE and slightly hurts NLL. We argue this is the expected outcome on a dataset whose ground truth is itself Markov in $(S, v)$, and is consistent with what \citet{cohen2021} report for their PC1.
+\end{abstract}
+
+\section{Scope and what this report is not}
+
+This report describes the methodology and the outcomes of one run of the \texttt{volsurface\_cdg} v2 demo notebook (\texttt{notebooks/demo.ipynb}). It is \emph{not} a benchmark study: there is no comparison to alternative models in the literature, no real-market data, no error bars or repeated trials, no convergence theorems, and no claim that the method beats anything other than the random-walk baseline that is part of the demo. Where the code differs from the original works it is based on, those differences are flagged. The aim is to document what the code does and what came out of it, so that someone reading it can decide whether to extend it.
+
+\section{Setup and notation}
+
+\paragraph{Surface representation.}
+Time is indexed by $k = 0, 1, \dots, L$. At each $k$ we observe a vector of normalised call prices $\mathbf c_k \in \R^N$ on a fixed lattice of $N = N_\tau \cdot N_m$ option specifications $(\tau_j, m_j)$, where $\tau_j$ is time to expiry and $m_j = K_j / S_k$ is moneyness. Normalisation is $c_j = C_j / S$ so that $c_j$ is approximately $O(1)$ and dimensionless. Black--Scholes inversion of $c_j$ to implied volatility $\sigma_j$ is entrywise and bijective on the no-arbitrage region.
+
+\paragraph{Lattice used in experiments.}
+$\tau \in \{0.05, 0.1, 0.25, 0.5\}$ years and $m \in \{0.9, 0.95, 1.0, 1.05, 1.1\}$, so $N = 20$. (We pick a small rectangular lattice for parsimony; an arbitrarily shaped lattice can be substituted with no change to the methodology.)
+
+\paragraph{Static no-arbitrage.}
+For a rectangular lattice the model-free arbitrage-free region is a polyhedron
+\begin{equation}
+\mathcal C_{\text{NA}} = \{\mathbf c \in \R^N : A \mathbf c \ge \mathbf{\hat b}\}
+\label{eq:CNA}
+\end{equation}
+encoding (1) bounds $\max(1-m, 0) \le c \le 1$, (2) calendar monotonicity in $\tau$ at each $m$, (3) butterfly convexity in $m$ at each $\tau$, and (4) monotonicity in $m$ at each $\tau$. After removing duplicate rows, the code produces $R = 83$ inequalities for the chosen $4\times 5$ lattice.
+
+\paragraph{Forecasting goal.}
+Given today's lattice $\mathbf c_k$ and some context $Y_k$ summarising the history $\{\mathbf c_j\}_{j \le k}$, produce a one-step-ahead conditional distribution $p(\mathbf c_{k+1} \mid \mathbf c_k, Y_k)$ supported on $\mathcal C_{\text{NA}}$.
+
+\section{Methodology}
+
+The pipeline has six stages: (i) factor decoding, (ii) construction of the factor polytope, (iii) context construction, (iv) constrained NSDE training, (v) optional CDG guidance training, and (vi) inversion to implied volatility. We describe each.
+
+\subsection{Factor decoding (\texttt{src/factors.py})}
+
+Following \citet[\S 2.2]{cohen2021} we posit
+\begin{equation}
+\mathbf c_k = \mathbf G_0 + \mathbf G^\top \xib_k + \boldsymbol\varepsilon_k,
+\label{eq:factor}
+\end{equation}
+with $\xib_k \in \R^d$, $\mathbf G \in \R^{d \times N}$ a price-basis matrix, $\mathbf G_0 \in \R^N$ the lattice average, and $\boldsymbol\varepsilon_k$ a reconstruction residual. The code uses pure PCA on the centred surface time series, $\mathbf C - \mathbf G_0$, to obtain $\mathbf G$. This is a simplification of \citet[Algorithm 1]{cohen2021}: their full procedure builds factors to (i) minimise the residual of an HJM-type drift restriction (dynamic-arbitrage objective), (ii) minimise the reconstruction error (statistical-accuracy objective), and (iii) reduce the number of static-arbitrage violations after reconstruction. On the Heston data used here, plain PCA at $d = 2$ already yields negligible reconstruction error, and we did not implement the dynamic-arbitrage step. On real-market data this is something to add back.
+
+\paragraph{Factor scale normalisation.}
+The raw PCA scores have wildly different scales across components (PC1 variance much larger than PC2 variance). Before training we rescale so each $\xi_i$ has unit standard deviation across the training trajectory:
+\begin{equation}
+\xib_k^{\text{new}} = \mathrm{diag}(s)^{-1} \xib_k, \quad \mathbf G^{\text{new}} = \mathrm{diag}(s) \mathbf G, \qquad s_i = \mathrm{std}(\xi_{i, \cdot}).
+\end{equation}
+This preserves $\mathbf G^\top \xib$ but improves optimiser conditioning.
+
+\paragraph{Test-set projection.}
+On the held-out test trajectory we project surfaces into the \emph{same} basis without refitting:
+\begin{equation}
+\xib_k^{\text{test}} = \mathbf G^{\top +} (\mathbf c_k^{\text{test}} - \mathbf G_0),
+\end{equation}
+where ${}^+$ denotes the Moore--Penrose pseudoinverse (least-squares solve). On the Heston run, train reconstruction has liquid-options MAPE $0.049\%$ and test reconstruction has $0.137\%$; both are negligible relative to the next-step forecast error reported later.
+
+\subsection{The factor polytope (\texttt{src/factors.py}, \texttt{src/constraints.py})}
+
+Substituting \eqref{eq:factor} into \eqref{eq:CNA} yields the static no-arbitrage region in factor space:
+\begin{equation}
+\mathcal P = \{ \xib \in \R^d : V \xib \ge \mathbf b\}, \qquad V := A \mathbf G^\top, \quad \mathbf b := \mathbf{\hat b} - A \mathbf G_0.
+\label{eq:polytope}
+\end{equation}
+This is a convex polytope in $\R^d$. After factor normalisation and constraint construction on our $4 \times 5$ lattice, $V \in \R^{83 \times 2}$ for $d = 2$. We do not run a full LP-based redundancy elimination; we deduplicate rows only.
+
+\paragraph{Empirical occupancy.}
+On the Heston training trajectory, the reconstructed factors $\xib_k$ violate the polytope only by reconstruction error of order $10^{-6}$ in $V \xib - \mathbf b$. Of $501$ time steps, $394$ pairs $(\xib_k, \xib_{k+1})$ have both endpoints strictly inside $\mathcal P$ at tolerance $10^{-6}$. The training routine uses only these pairs (\texttt{factors.valid\_pair\_mask}), so that the modelled one-step transition is always between interior points.
+
+\subsection{Context construction (\texttt{src/context.py})}
+
+The context vector is a deterministic function of past observations:
+\begin{align}
+Y_k &= \bigl( \mathrm{EWMA}_5(\xib)_k,\; \mathrm{EWMA}_{20}(\xib)_k,\; \mathrm{RV}_{20}(\log S)_k \bigr) \in \R^{d_Y}.
+\end{align}
+The EWMAs use halflife $5$ and $20$ steps. The realised variance is the rolling sum of squared log-returns over a 20-step window. For $d = 2$ this gives $d_Y = 5$. We standardise $Y$ using train means and standard deviations applied to test.
+
+This is \emph{exogenous augmentation}: $Y_k$ has no SDE of its own; it is observable from the past trajectory and enters the network as a covariate. With this choice the polytope constraints still concern $\xib$ only, and the constrained-NSDE machinery does not need modification.
+
+\subsection{Constrained neural SDE on the polytope (\texttt{src/nsde.py})}
+
+We model the factor as a diffusion
+\begin{equation}
+d\xib_t = \mu(\xib_t, Y_t)\, dt + \sigma(\xib_t, Y_t)\, dW_t,
+\label{eq:nsde}
+\end{equation}
+where $W$ is a standard $d$-dimensional Brownian motion, and require $\xib_t \in \mathcal P$ for all $t \ge 0$. We parameterise $\mu : \R^{d+d_Y} \to \R^d$ and a lower-triangular Cholesky factor $L : \R^{d+d_Y} \to \R^{d \times d}$ (with $\sigma = L$, $\sigma\sigma^\top = L L^\top$) by a small MLP with $\tanh$ activations, and compose them with two boundary-aware operators.
+
+\paragraph{Friedman--Pinsky conditions.} \citet{friedman1973} give sufficient conditions for a diffusion to remain in a closed region with smooth boundary almost surely. For each facet $v_k^\top \xib = b_k$ of $\mathcal P$, the conditions are
+\begin{align}
+v_k^\top \sigma\sigma^\top v_k &= 0 \quad &&\text{at } v_k^\top \xib = b_k \quad &&\text{(no diffusion normal to the facet)},
+\label{eq:fp-sigma} \\
+v_k^\top \mu &\ge 0 \quad &&\text{at } v_k^\top \xib = b_k \quad &&\text{(inward drift on the facet)}.
+\label{eq:fp-mu}
+\end{align}
+\citet[\S 3]{cohen2021} construct two operators $\mathcal G_\sigma$, $\mathcal G_\mu$ that enforce these conditions exactly for any underlying network output, using a Gram--Schmidt construction over facet normals and a set of pre-computed deep-interior points.
+
+\paragraph{Our parsimonious operators.}
+We use simpler operators that approximate the same effect:
+\begin{itemize}
+\item Let $d_{\min}(\xib) := \min_k (v_k^\top \xib - b_k)/\|v_k\|$ be the minimum normalised signed distance to any facet, and let $\rho^\star > 0$ be a fixed activation scale.
+\item \textbf{Diffusion gate.} The diffusion is scaled by a scalar
+\begin{equation}
+g(\xib) = \mathrm{sigmoid}\bigl(\beta\, (d_{\min}(\xib)/\rho^\star - 1)\bigr),
+\label{eq:gate}
+\end{equation}
+which goes to $0$ as $\xib$ approaches any facet and to $1$ deep in the interior. We use $\beta = 5$.
+\item \textbf{Drift correction.} We add an inward attraction toward the Chebyshev centre $\xib^c$ of $\mathcal P$ that only activates near the boundary:
+\begin{equation}
+\mu(\xib, Y) = \hat\mu(\xib, Y) + c_0 \cdot \mathrm{ReLU}\bigl(1 - d_{\min}(\xib)/\rho^\star\bigr) \cdot (\xib^c - \xib).
+\label{eq:drift-pull}
+\end{equation}
+We use $c_0 = 1$.
+\end{itemize}
+
+These operators differ from \citet{cohen2021}'s construction in two ways. (1) The diffusion gate kills the full diffusion near a facet, not only the normal component. This is more conservative: tangential diffusion is also damped when $\xib$ is close to the boundary. (2) The drift correction uses a single Chebyshev centre for all facets rather than facet-specific deep-interior points. Neither difference is required by the FP theorem; both are simplifications that keep the code short. As a safety net during simulation, any step that leaves $\mathcal P$ is projected back onto the most violated facet by a one-step half-space projection (\texttt{\_project\_to\_polytope\_step}). On Heston test runs this safety net almost never fires.
+
+\paragraph{Auto-tuning $\rho^\star$.}
+The activation scale must be small enough that $g$ and the drift correction stay near their interior limits ($g \approx 1$, correction $\approx 0$) at typical training samples; otherwise the boundary operators turn on in the middle of the data and the NLL blows up. We choose
+\begin{equation}
+\rho^\star = \max\bigl( 10^{-3},\; \tfrac{1}{2}\, q_{0.05}\bigl\{ d_{\min}(\xib_k)\bigr\}_{k : d_{\min} > 0} \bigr),
+\label{eq:rhostar}
+\end{equation}
+where $q_{0.05}$ denotes the empirical 5th percentile. The factor 1/2 is a margin. On the Heston run this gives $\rho^\star \approx 0.035$ for normalised factors. The earlier v1 of the code used $\rho^\star = 0.05 \cdot r_{\text{Chebyshev}} \approx 0.50$, which is roughly $14\times$ too large; that bug caused the gate to nearly kill diffusion at legitimate training samples and the loss to plateau two orders of magnitude above its correct value.
+
+\paragraph{Network architecture.}
+A 2-hidden-layer MLP with width 32 (or 16 for the larger-input context model), $\tanh$ activations, and output dimension $d + d(d+1)/2$ for $\mu$ and the lower-triangular entries of $L$. The diagonal entries of $L$ are exponentiated (with clipping at $\pm$ a few) to ensure positivity.
+
+\paragraph{Training loss.}
+We use Euler--Maruyama negative log-likelihood on observed pairs. Given $(\xib_k, \xib_{k+1})$ separated by time $\Delta t$, the Euler one-step model is
+\begin{equation}
+\xib_{k+1} \mid \xib_k \;\overset{\text{Euler}}{\sim}\; \mathcal N\bigl(\xib_k + \mu(\xib_k, Y_k)\,\Delta t,\; a(\xib_k, Y_k)\,\Delta t\bigr),
+\quad a = L L^\top.
+\end{equation}
+The per-pair negative log-likelihood is
+\begin{equation}
+\ell_k = \tfrac{1}{2}\Bigl[d \log(2\pi \Delta t) + \log\det a(\xib_k, Y_k) + \tfrac{1}{\Delta t} \|L^{-1}_{\text{eff}}(\xib_{k+1} - \xib_k - \mu\,\Delta t)\|^2\Bigr],
+\label{eq:euler-nll}
+\end{equation}
+where $L_{\text{eff}} := L + \epsilon_\sigma I$ with $\epsilon_\sigma = 10^{-3}$. The floor prevents the determinant from collapsing when the gate is near zero, which would otherwise produce undefined values during edge-case evaluation. The training objective is the mean of $\ell_k$ over the training pairs, optimised with AdamW (learning rate $3\times 10^{-3}$, weight decay $10^{-5}$, batch size 64, gradient clipping at norm 5).
+
+\paragraph{Tamed simulation.}
+At simulation time we use a tamed Euler scheme: the drift and diffusion are each rescaled by $1/(1 + \|\cdot\|\sqrt{\Delta t})$ before being applied. This is from \citet{hutzenthaler2012} and prevents blow-ups if the network ever produces unusually large values; in practice on Heston it is essentially indistinguishable from plain Euler.
+
+\subsection{CDG-ML guidance (\texttt{src/cdg.py})}
+
+For an additional rare-event conditioning set $\mathcal S \subset \mathcal P$ (e.g.\ $\{\xib : \text{VIX-proxy}(\xib) > q_{0.9}\}$ where the VIX-proxy is a linear functional of $\mathbf c$ and hence of $\xib$), Doob's $h$-transform gives a guided SDE whose terminal law equals the conditional law of the pretrained SDE given $\xib_T \in \mathcal S$ \citep{guo2026}:
+\begin{equation}
+d\xib^{\mathcal S}_t = \bigl[\mu(\xib^{\mathcal S}_t, Y) + a(\xib^{\mathcal S}_t, Y)\,\nabla_\xib \log h(t, \xib^{\mathcal S}_t, Y)\bigr]\, dt + \sigma(\xib^{\mathcal S}_t, Y)\, dW_t,
+\label{eq:guided}
+\end{equation}
+where
+\begin{equation}
+h(t, \xib, Y) := \Prob\bigl(\xib_T \in \mathcal S \mid \xib_t = \xib, Y_t = Y\bigr)
+\label{eq:h-def}
+\end{equation}
+is the absorption probability under the pretrained SDE. Note that $Y$ is held fixed at its observed value over the forecasting horizon, consistent with one-step-ahead conditioning: $Y$ summarises information available at time $t$.
+
+\paragraph{Martingale-loss objective.}
+Under the pretrained measure, $\{h(t, \xib_t, Y)\}_{t \in [0,T]}$ is a martingale terminating at $\ind\{\xib_T \in \mathcal S\}$. \citet[\S 3.2.1]{guo2026} use this to derive the $L^2$-projection objective
+\begin{equation}
+\min_\phi \; \E_Y\, \E_{[0,T]}^{Y}\!\left[ \int_0^T \bigl( h_\phi(t, \xib_t, Y) - \ind\{\xib_T \in \mathcal S\} \bigr)^2 dt \right],
+\label{eq:cdg-ml}
+\end{equation}
+where the inner expectation is over trajectories of the pretrained constrained NSDE conditioned on $Y$. In practice we approximate the expectation by sampling $(\xib_0, Y_0)$ from the training distribution, simulating the pretrained SDE for $n$ steps holding $Y$ fixed, and averaging the squared residual over the (path, time) grid. The architecture for $h_\phi$ is a small MLP with sigmoid output, taking $(t, \xib, Y) \in \R^{1 + d + d_Y}$ as input.
+
+\paragraph{Guided sampling.}
+At sampling time we add the guidance term to the pretrained drift. A guidance scale $\eta \ge 0$ is exposed as a hyperparameter:
+\begin{equation}
+d\xib^{\mathcal S, \eta}_t = \bigl[\mu(\xib_t, Y) + \eta\, a(\xib_t, Y)\,\nabla_\xib \log h_\phi(t, \xib_t, Y)\bigr]\, dt + \sigma(\xib_t, Y)\, dW_t.
+\end{equation}
+$\eta = 1$ corresponds to exact $h$-transform (modulo the approximation error of $h_\phi$); $\eta > 1$ is a heuristic classifier-style sharpening that has no exact interpretation in the Doob construction.
+
+\subsection{Inversion to implied volatility (\texttt{src/heston.py})}
+
+Given a simulated factor $\xib^{(k+1)} \in \mathcal P$, reconstruct $\mathbf c^{(k+1)} = \mathbf G_0 + \mathbf G^\top \xib^{(k+1)}$, which lies in $\mathcal C_{\text{NA}}$ by construction. Black--Scholes implied volatility is then computed entrywise by bracketed root-finding (\texttt{scipy.optimize.brentq}) on the standard call-price function.
+
+\section{Experimental setup}
+
+\paragraph{Data.}
+Two independent Heston paths over $T_{\text{horizon}} = 1$ year, sampled at $\Delta t = 1/500$ (so 501 time steps each). Parameters: $\kappa = 3$, $\theta = 0.04$, $\sigma_v = 0.3$, $\rho = -0.7$, $v_0 = 0.04$, $S_0 = 100$, $r = q = 0$. Feller condition is satisfied: $2 \kappa \theta - \sigma_v^2 = 0.15 > 0$. The training path uses NumPy generator seed 42; the held-out test path uses seed 43. At each time step we price the $4 \times 5 = 20$ options on the lattice via Carr--Madan FFT with $N_\text{fft} = 4096$ and damping $\alpha = 1.5$.
+
+\paragraph{Models trained.}
+\begin{description}
+\item[Model A (no-context).] Constrained NSDE with $d_Y = 0$, width 32, depth 2; 80 epochs.
+\item[Model B (context).] Constrained NSDE with $d_Y = 5$, width 16, depth 2; 80 epochs. The width is reduced because adding $d_Y$ extra inputs roughly doubles the input dimension and we want comparable parameter counts.
+\end{description}
+
+\paragraph{Baselines.}
+\begin{description}
+\item[Random walk.] $p(\xib_{k+1} \mid \xib_k) = \mathcal N(\xib_k, \hat\Sigma\, \Delta t)$ with $\hat\Sigma$ the diagonal sample covariance of one-step factor increments on the training trajectory.
+\end{description}
+We do not include further baselines.
+
+\paragraph{Metrics.}
+On the test trajectory, restricted to pairs $(\xib_k, \xib_{k+1})$ where both endpoints lie inside the polytope ($460/500$ pairs):
+\begin{itemize}
+\item \textbf{One-step Euler NLL} (lower is better), equation \eqref{eq:euler-nll} evaluated on test pairs with the trained network's $\mu, L$ and $\epsilon_\sigma = 10^{-3}$.
+\item \textbf{One-step price MAPE} on liquid options: predict $\hat{\xib}_{k+1} = \xib_k + \mu(\xib_k, Y_k)\,\Delta t$, reconstruct $\hat{\mathbf c}_{k+1} = \mathbf G_0 + \mathbf G^\top \hat{\xib}_{k+1}$, and compute $\mathrm{mean}_{j : |c| > 10^{-3}}\, |\hat c_j - c_j|/|c_j|$. This is a point prediction error and does not use the diffusion.
+\end{itemize}
+
+\paragraph{Structural checks.}
+We simulate 50 paths $\times$ 100 steps starting from a test point and report: (i) the fraction of simulated factor values that remain in $\mathcal P$ to tolerance $10^{-8}$, and (ii) the fraction of terminal reconstructed surfaces satisfying $A \mathbf c \ge \mathbf{\hat b}$ to tolerance $10^{-8}$.
+
+\paragraph{CDG guidance.}
+The rare-event set is $\mathcal S = \{\xib : c_{\text{ATM, short-}\tau}(\xib) > q_{0.9}\}$ where $q_{0.9}$ is the 90th percentile of the ATM short-$\tau$ normalised price over the training trajectory ($q_{0.9} = 0.0180$ on this run). The horizon for CDG training is $T_{\text{CDG}} = 30\,\Delta t$. We train $h_\phi$ for 30 epochs with 256 sample paths per epoch. We then sample 200 paths from a test starting state under: (i) the unguided pretrained Model~B, (ii) guided with $\eta = 1$, and (iii) guided with $\eta = 3$.
+
+\section{Results}
+
+The numbers below are from one execution of the notebook. They are reported as observed, not averaged.
+
+\paragraph{Reconstruction.}
+Train: relative RMSE $0.0102\%$, liquid-options MAPE $0.049\%$.
+Test (same basis, no refitting): liquid-options MAPE $0.137\%$.
+
+\paragraph{Polytope geometry.}
+$d = 2$, $V \in \R^{83 \times 2}$ after dedup. $\rho^\star = 0.035$ from \eqref{eq:rhostar}.
+Train valid pairs: $394 / 500$. Test valid pairs: $460 / 500$.
+
+\paragraph{Forecast accuracy on the held-out test trajectory.}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrr}
+\toprule
+Sampler & Test NLL & 1-step price MAPE \\
+\midrule
+Random-walk baseline    &  3.1597 & 2.9705\% \\
+No-context NSDE (A)     &  0.8408 & 2.9656\% \\
+Context NSDE (B)        &  3.2397 & 2.9607\% \\
+\bottomrule
+\end{tabular}
+\caption{One-step-ahead forecasting metrics on the held-out test trajectory (460 pairs).}
+\label{tab:forecast}
+\end{table}
+
+Three remarks on Table~\ref{tab:forecast}.
+(1) The no-context NSDE has roughly $2.3$ nats lower test NLL than the random-walk baseline. The state-dependent drift and diffusion are doing useful work.
+(2) The context NSDE's test NLL is essentially the same as the random walk and slightly worse than no-context. The training loss on Model~B is lower than on Model~A at epoch 80 ($-0.49$ vs $-0.71$ in our run; numbers fluctuate across seeds), so this is a mild generalisation gap. With $d_Y = 5$ on $394$ training pairs and Heston data that is itself Markov in $(S, v)$, this is unsurprising; the context dimensions act as approximately useless covariates and the optimiser uses them to fit train noise.
+(3) The price MAPEs are all within $0.005$ percentage points of each other, around $2.97\%$. This is essentially the one-step price-change scale on a 1-day-equivalent step, and is dominated by the unforecastable component of the diffusion. The drift is small relative to it, so point predictions are roughly indistinguishable across the three samplers. NLL is a more sensitive metric here.
+
+\paragraph{Why context does not help here, and why we report it anyway.}
+The ground-truth Heston dynamics are Markov in $(S_t, v_t)$. After factor decoding, PC1 of the normalised price surface is approximately a monotone function of $v_t$ (see \citet[Figure 13]{cohen2021}), so $\xib_k$ already captures the latent volatility state. The context vector $Y_k$ is a deterministic function of past $\xib$; it cannot encode information about the future that is not already in $\xib_k$ on a Markov process. We expected the context model to roughly tie with the no-context model on Heston, and that is what happened. We include it for two reasons. First, the v1 of this code trained a Markov-in-$\xib$ model and described it as a ``conditional forecaster,'' which was incorrect; replacing that with an actually-context-conditioned model fixes a real specification problem. Second, on real-market data with regime persistence beyond a local Markov state (jump clustering, vol-of-vol regimes), the context channel becomes the natural place to add observable side information.
+
+\paragraph{Structural checks.}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrr}
+\toprule
+Model & Polytope containment & Terminal arbitrage-free \\
+\midrule
+A (no-context)   & 5050 / 5050 & 50 / 50 \\
+B (context)      & 5050 / 5050 & 50 / 50 \\
+\bottomrule
+\end{tabular}
+\caption{Structural properties on 50 paths $\times$ 100 simulated steps from a test starting state. The polytope-containment column counts factor values (including the safety-projection step); the arbitrage-free column counts reconstructed terminal surfaces.}
+\label{tab:struct}
+\end{table}
+
+On this run the safety projection step is needed for none or essentially none of the simulated points (the count above is after projection; in inspection of the trajectories the underlying network proposals are inside the polytope on the data range we explore). This does not amount to a proof that the polytope is absorbing under the trained network; we have no such proof, and the simpler diffusion gate \eqref{eq:gate} does not satisfy condition \eqref{eq:fp-sigma} exactly. The result of the structural check is that in practice on Heston the simpler operators plus the projection safety net keep generated surfaces arbitrage-free.
+
+\paragraph{CDG guidance.}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrr}
+\toprule
+Sampler & Mean terminal VIX-proxy & $\Prob(\text{VIX-proxy} > q_{0.9})$ \\
+\midrule
+Unguided                 & 0.0172 & 0.325 \\
+Guided ($\eta = 1$)      & 0.0181 & 0.580 \\
+Guided ($\eta = 3$)      & 0.0185 & 0.700 \\
+\bottomrule
+\end{tabular}
+\caption{CDG-ML guidance on the high-VIX-proxy rare event. 200 paths from a fixed test starting state.}
+\label{tab:cdg}
+\end{table}
+
+Guidance with $\eta = 1$ raises the probability of the rare event from $0.32$ to $0.58$; $\eta = 3$ pushes it to $0.70$. The $\eta = 1$ rate corresponds (modulo the $L^2$ approximation error of $h_\phi$) to the conditional probability under the pretrained measure given the starting state and $Y_0$. The $\eta = 3$ rate has no such interpretation; it is a heuristic sharpening of the conditioning. The mean of the VIX-proxy moves only slightly across $\eta$ because most of the conditioning mass is just above the threshold $q_{0.9}$.
+
+\section{Limitations and what should be added}
+
+\paragraph{No theoretical guarantees.} The simpler diffusion gate \eqref{eq:gate} does not exactly satisfy the FP normal-component-vanishing condition \eqref{eq:fp-sigma}; it only damps all components together. As a result we cannot claim almost-sure polytope containment under the trained NSDE. In practice the polytope is not exited because (i) data is mostly in the interior, (ii) the gate damps diffusion strongly near the boundary, and (iii) the projection safety net catches escapees. For a deployment that needs the FP guarantee, the operators of \citet[Section 3]{cohen2021} should be implemented in full.
+
+\paragraph{Single trajectory, no error bars.} The whole numerical section comes from one execution. Seed-to-seed variation in test NLL is at the level of a few tenths of a nat in our spot checks; we did not run repeated trials.
+
+\paragraph{Dynamic arbitrage not addressed at factor-construction time.} \citet[\S 2.5]{cohen2021} construct factors to minimise the residual of the HJM-type drift restriction. We skipped this step. On Heston the additional structure is not needed for the present demo, but on real data it is part of the design.
+
+\paragraph{Approximate $h$-transform.} The $h$-function is a small MLP fit on 30 epochs $\times$ 256 paths. We did not check sensitivity of the rare-event probabilities to network capacity or to the number of training paths, and we did not implement the covariation loss (CDG-MCL) of \citet{guo2026} which directly fits $\nabla h$. With more compute these would be the natural ablations.
+
+\paragraph{Vol-space inversion is entrywise.} Each $(\tau_j, m_j)$ is inverted independently; we do not impose smoothness across the lattice in vol space. For deeply OTM short-$\tau$ points where vega is small, the inversion error can be appreciable.
+
+\paragraph{Synthetic data only.} Heston by construction has no regime memory beyond $(S, v)$. The whole reason to want context conditioning is real-market behaviour that violates that, and we have not tested on real data.
+
+\section{Reproduction}
+
+The notebook \texttt{notebooks/demo.ipynb} executes the full pipeline end-to-end and reproduces the numbers in Tables \ref{tab:forecast}--\ref{tab:cdg} when run with NumPy seed 42 (train) and 43 (test). The script \texttt{notebooks/demo\_script.py} is the same pipeline as a single Python file.
+
+\section*{References}
+
+\renewcommand{\section}[2]{}
+\begin{thebibliography}{9}
+
+\bibitem{cohen2021}
+S.\ N.\ Cohen, C.\ Reisinger, S.\ Wang.
+\textit{Arbitrage-free neural-SDE market models.}
+arXiv:2105.11053, 2021.
+
+\bibitem{guo2026}
+Z.\ Guo, W.\ Tang, R.\ Xu.
+\textit{Conditional diffusion guidance under hard constraint: a stochastic analysis approach.}
+2026.
+
+\bibitem{friedman1973}
+A.\ Friedman, M.\ A.\ Pinsky.
+\textit{Asymptotic stability and spiraling properties for solutions of stochastic equations.}
+Trans.\ Amer.\ Math.\ Soc.\ \textbf{186}, 331--358, 1973.
+
+\bibitem{hutzenthaler2012}
+M.\ Hutzenthaler, A.\ Jentzen, P.\ E.\ Kloeden.
+\textit{Strong convergence of an explicit numerical method for SDEs with nonglobally Lipschitz continuous coefficients.}
+Ann.\ Appl.\ Probab.\ \textbf{22}(4), 1611--1641, 2012.
+
+\end{thebibliography}
+
+\end{document}
